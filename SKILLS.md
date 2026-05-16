@@ -397,6 +397,7 @@ entity_llm_model: ""             # LLM for review (empty = use main model)
 
 | Variable | Purpose |
 |----------|---------|
+| `LLM_MODEL` | Default model — skips model prompt during `openkb init` if set |
 | `LLM_API_KEY` | Primary API key — propagated to provider-specific vars automatically |
 | `OPENAI_API_KEY` | Direct OpenAI key (alternative to LLM_API_KEY) |
 | `ANTHROPIC_API_KEY` | Direct Anthropic key |

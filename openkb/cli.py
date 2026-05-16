@@ -252,24 +252,36 @@ def init():
         click.echo("Knowledge base already initialized.")
         return
 
-    # Interactive prompts
-    click.echo("Pick an LLM in `provider/model` LiteLLM format:")
-    click.echo("  OpenAI:    gpt-5.4-mini, gpt-5.4")
-    click.echo("  Anthropic: anthropic/claude-sonnet-4-6, anthropic/claude-opus-4-6")
-    click.echo("  Gemini:    gemini/gemini-3.1-pro-preview, gemini/gemini-3-flash-preview")
-    click.echo("  Others:    see https://docs.litellm.ai/docs/providers")
-    click.echo()
-    model = click.prompt(
-        f"Model (enter for default {DEFAULT_CONFIG['model']})",
-        default=DEFAULT_CONFIG["model"],
-        show_default=False,
-    )
-    api_key = click.prompt(
-        "LLM API Key (saved to .env, enter to skip)",
-        default="",
-        hide_input=True,
-        show_default=False,
-    ).strip()
+    # Interactive prompts — skip if env vars are set
+    env_model = os.environ.get("LLM_MODEL", "").strip()
+    env_api_key = os.environ.get("LLM_API_KEY", "").strip()
+
+    if env_model:
+        model = env_model
+        click.echo(f"Using model from LLM_MODEL: {model}")
+    else:
+        click.echo("Pick an LLM in `provider/model` LiteLLM format:")
+        click.echo("  OpenAI:    gpt-5.4-mini, gpt-5.4")
+        click.echo("  Anthropic: anthropic/claude-sonnet-4-6, anthropic/claude-opus-4-6")
+        click.echo("  Gemini:    gemini/gemini-3.1-pro-preview, gemini/gemini-3-flash-preview")
+        click.echo("  Others:    see https://docs.litellm.ai/docs/providers")
+        click.echo()
+        model = click.prompt(
+            f"Model (enter for default {DEFAULT_CONFIG['model']})",
+            default=DEFAULT_CONFIG["model"],
+            show_default=False,
+        )
+
+    if env_api_key:
+        api_key = ""
+        click.echo("Using API key from LLM_API_KEY (skipping prompt).")
+    else:
+        api_key = click.prompt(
+            "LLM API Key (saved to .env, enter to skip)",
+            default="",
+            hide_input=True,
+            show_default=False,
+        ).strip()
     # Create directory structure
     Path("raw").mkdir(exist_ok=True)
     Path("wiki/sources/images").mkdir(parents=True, exist_ok=True)

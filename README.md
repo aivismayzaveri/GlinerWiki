@@ -95,8 +95,11 @@ Set your model during `openkb init`, or in [`.openkb/config.yaml`](#configuratio
 Create a `.env` file with your LLM API key:
 
 ```bash
+LLM_MODEL=anthropic/claude-sonnet-4-6   # optional — skips model prompt during init
 LLM_API_KEY=your_llm_api_key
 ```
+
+If `LLM_MODEL` is set, `openkb init` uses it automatically without prompting. If unset, init prompts interactively.
 
 ### Independent Entity Extraction Provider
 
@@ -229,6 +232,7 @@ entity_confidence_threshold: 0.5 # GLiNER2 confidence cutoff
 
 | Variable | Purpose |
 |---|---|
+| `LLM_MODEL` | Default model for `openkb init` (skips model prompt if set) |
 | `LLM_API_KEY` | Universal API key (propagated to all providers) |
 | `OPENAI_API_KEY` | OpenAI-specific key |
 | `ANTHROPIC_API_KEY` | Anthropic-specific key |
