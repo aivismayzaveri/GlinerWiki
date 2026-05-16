@@ -97,7 +97,7 @@ def index_long_document(pdf_path: Path, kb_dir: Path) -> IndexResult:
 
     if not all_pages:
         if pageindex_api_key:
-            logger.warning("Cloud returned no pages for %s; falling back to local pymupdf", pdf_path.name)
+            logger.warning("Cloud returned no pages for %s; falling back to local docling", pdf_path.name)
         all_pages = convert_pdf_to_pages(pdf_path, pdf_path.stem, images_dir)
 
     (sources_dir / f"{pdf_path.stem}.json").write_text(

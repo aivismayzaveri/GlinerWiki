@@ -3,9 +3,10 @@
 Pipeline leveraging LLM prompt caching:
   Step 1: Build base context A (schema + document content).
   Step 2: A → generate summary.
-  Step 3: A + summary → concepts plan (create/update/related).
-  Step 4: Concurrent LLM calls (A cached) → generate new + rewrite updated concepts.
-  Step 5: Code adds cross-ref links to related concepts, updates index.
+  Step 3: Dual entity extraction (GLiNER2 + LLM) in parallel.
+  Step 4: A + summary + entities → concepts plan (create/update/related).
+  Step 5: Concurrent LLM calls (A cached) → generate new + rewrite updated concepts.
+  Step 6: Code writes entity pages, adds cross-ref links, updates index.
 
 Anthropic prompt caching is enabled via ``cache_control`` markers at two
 breakpoints: end of the document message (caches system + doc across all
@@ -30,6 +31,15 @@ import litellm
 
 from openkb.lint import list_existing_wiki_targets, strip_ghost_wikilinks
 from openkb.schema import get_agents_md
+from openkb.entity_extractor import extract_entities, MergedEntity, _sanitize_entity_slug
+from openkb.entity_writer import write_entity_pages, update_entity_index, add_entity_backlinks
+from openkb.wiki_utils import (
+    ensure_h2_section,
+    section_contains_link,
+    replace_section_entry,
+    insert_section_entry,
+)
+from openkb import jj as jjctl
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +79,8 @@ Based on the summary above, decide how to update the wiki's concept pages.
 Existing concept pages:
 {concept_briefs}
 
+{entities_context}
+
 Return a JSON object with three keys:
 
 1. "create" — new concepts not covered by any existing page. Array of objects:
@@ -86,6 +98,7 @@ Rules:
 - Do NOT create a concept that overlaps with an existing one — use "update".
 - Do NOT create concepts that are just the document topic itself.
 - "related" is for lightweight cross-linking only, no content rewrite needed.
+- When entities are provided, consider which concepts should reference them.
 
 Return ONLY valid JSON, no fences, no explanation.
 """
@@ -351,98 +364,6 @@ def _read_concept_briefs(wiki_dir: Path) -> str:
     return "\n".join(lines) or "(none yet)"
 
 
-def _iter_h2_headings(lines: list[str]) -> list[tuple[int, str]]:
-    """Return ``[(line_index, normalized_heading), ...]`` for every ATX H2.
-
-    A line counts as H2 when it starts with ``"## "`` (two hashes + space).
-    ``normalized_heading`` is the line with trailing whitespace stripped, so
-    ``"## Documents "`` normalizes to ``"## Documents"`` — letting callers
-    use exact-string comparison without tripping on stray whitespace.
-
-    Used by ``_get_section_bounds`` so heading lookup and the next-section
-    boundary share one scan and one normalization rule.
-    """
-    return [
-        (i, line.rstrip())
-        for i, line in enumerate(lines)
-        if line.startswith("## ")
-    ]
-
-
-def _get_section_bounds(lines: list[str], heading: str) -> tuple[int, int] | None:
-    """Return the [start, end) bounds for a Markdown H2 section.
-
-    Uses ``_iter_h2_headings`` so the same H2 detection that finds the
-    target heading also determines the section's end (the next H2). A
-    drifted ``"## Documents "`` matches ``"## Documents"`` because both
-    sides are normalized.
-    """
-    headings = _iter_h2_headings(lines)
-    for k, (idx, normalized) in enumerate(headings):
-        if normalized == heading:
-            start = idx + 1
-            end = headings[k + 1][0] if k + 1 < len(headings) else len(lines)
-            return start, end
-    return None
-
-
-def _ensure_h2_section(lines: list[str], heading: str) -> None:
-    """Ensure an H2 section ``heading`` exists in ``lines``; append if missing.
-
-    Recovers from hand-edited or drifted index.md files where the expected
-    section was removed or renamed — without this, downstream inserts would
-    silently no-op and entries would be dropped.
-    """
-    if _get_section_bounds(lines, heading) is not None:
-        return
-    logger.warning(
-        "Wiki page is missing %r section; appending it. "
-        "Check whether the file was hand-edited away from the canonical layout.",
-        heading,
-    )
-    while lines and lines[-1] == "":
-        lines.pop()
-    if lines:
-        lines.append("")
-    lines.append(heading)
-    lines.append("")
-
-
-def _section_contains_link(lines: list[str], heading: str, link: str) -> bool:
-    """Check whether an index entry already exists inside the named section."""
-    bounds = _get_section_bounds(lines, heading)
-    if bounds is None:
-        return False
-
-    start, end = bounds
-    entry_prefix = f"- {link}"
-    return any(line.startswith(entry_prefix) for line in lines[start:end])
-
-
-def _replace_section_entry(lines: list[str], heading: str, link: str, entry: str) -> bool:
-    """Replace the first matching entry within a specific section."""
-    bounds = _get_section_bounds(lines, heading)
-    if bounds is None:
-        return False
-
-    start, end = bounds
-    entry_prefix = f"- {link}"
-    for i in range(start, end):
-        if lines[i].startswith(entry_prefix):
-            lines[i] = entry
-            return True
-    return False
-
-
-def _insert_section_entry(lines: list[str], heading: str, entry: str) -> bool:
-    """Insert a new entry at the top of a specific section."""
-    bounds = _get_section_bounds(lines, heading)
-    if bounds is None:
-        return False
-
-    start, _ = bounds
-    lines.insert(start, entry)
-    return True
 
 
 
@@ -601,9 +522,9 @@ def _backlink_summary(wiki_dir: Path, doc_name: str, concept_slugs: list[str]) -
         return
 
     lines = text.split("\n")
-    _ensure_h2_section(lines, "## Related Concepts")
+    ensure_h2_section(lines, "## Related Concepts")
     for slug in reversed(missing):
-        _insert_section_entry(lines, "## Related Concepts", f"- [[concepts/{slug}]]")
+        insert_section_entry(lines, "## Related Concepts", f"- [[concepts/{slug}]]")
     summary_path.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -627,8 +548,8 @@ def _backlink_concepts(wiki_dir: Path, doc_name: str, concept_slugs: list[str]) 
         if link in text:
             continue
         lines = text.split("\n")
-        _ensure_h2_section(lines, "## Related Documents")
-        _insert_section_entry(lines, "## Related Documents", f"- {link}")
+        ensure_h2_section(lines, "## Related Documents")
+        insert_section_entry(lines, "## Related Documents", f"- {link}")
         path.write_text("\n".join(lines), encoding="utf-8")
 
 def _update_index(
@@ -657,27 +578,27 @@ def _update_index(
 
     lines = index_path.read_text(encoding="utf-8").split("\n")
 
-    _ensure_h2_section(lines, "## Documents")
+    ensure_h2_section(lines, "## Documents")
     if concept_names:
-        _ensure_h2_section(lines, "## Concepts")
+        ensure_h2_section(lines, "## Concepts")
 
     doc_link = f"[[summaries/{doc_name}]]"
-    if not _section_contains_link(lines, "## Documents", doc_link):
+    if not section_contains_link(lines, "## Documents", doc_link):
         doc_entry = f"- {doc_link} ({doc_type})"
         if doc_brief:
             doc_entry += f" — {doc_brief}"
-        _insert_section_entry(lines, "## Documents", doc_entry)
+        insert_section_entry(lines, "## Documents", doc_entry)
 
     for name in concept_names:
         concept_link = f"[[concepts/{name}]]"
         concept_entry = f"- {concept_link}"
         if name in concept_briefs:
             concept_entry += f" — {concept_briefs[name]}"
-        if _section_contains_link(lines, "## Concepts", concept_link):
+        if section_contains_link(lines, "## Concepts", concept_link):
             if name in concept_briefs:
-                _replace_section_entry(lines, "## Concepts", concept_link, concept_entry)
+                replace_section_entry(lines, "## Concepts", concept_link, concept_entry)
         else:
-            _insert_section_entry(lines, "## Concepts", concept_entry)
+            insert_section_entry(lines, "## Concepts", concept_entry)
 
     index_path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -708,8 +629,9 @@ async def _compile_concepts(
     doc_brief: str = "",
     doc_type: str = "short",
     rewrite_summary: bool = False,
+    entities: list[MergedEntity] | None = None,
 ) -> None:
-    """Shared Steps 2-4: concepts plan → generate/update → index.
+    """Shared Steps 2-6: entity write → concepts plan → generate/update → index.
 
     Uses ``_CONCEPTS_PLAN_USER`` to get a plan with create/update/related
     actions, then executes each action type accordingly. Concept bodies are
@@ -719,6 +641,17 @@ async def _compile_concepts(
     wikilinks reflect the actual concept pages on disk.
     """
     source_file = f"summaries/{doc_name}.md"
+
+    # --- Build entity context for prompts ---
+    entity_slugs: list[str] = []
+    entities_context = ""
+    if entities:
+        entity_slugs = [_sanitize_entity_slug(e.canonical_name) for e in entities]
+        entity_lines = []
+        for e in entities:
+            aliases_str = f" (aliases: {', '.join(e.aliases)})" if e.aliases else ""
+            entity_lines.append(f"- [{e.entity_type}] {e.canonical_name}{aliases_str}: {e.description}")
+        entities_context = "Extracted entities from this document:\n" + "\n".join(entity_lines)
 
     # --- Step 2: Get concepts plan (A cached) ---
     concept_briefs = _read_concept_briefs(wiki_dir)
@@ -733,6 +666,7 @@ async def _compile_concepts(
         summary_msg,
         {"role": "user", "content": _CONCEPTS_PLAN_USER.format(
             concept_briefs=concept_briefs,
+            entities_context=entities_context,
         )},
     ], "concepts-plan", max_tokens=1024)
 
@@ -788,7 +722,7 @@ async def _compile_concepts(
     # Build the whitelist of valid wikilink targets the LLM may emit. It
     # combines what already exists on disk with what *this* round will
     # produce (plan.create + plan.update + plan.related), plus the
-    # summary about to be written for this document.
+    # summary about to be written for this document, plus entities.
     planned_slugs = {
         _sanitize_concept_name(c["name"]) for c in create_items + update_items
     } | {
@@ -798,6 +732,7 @@ async def _compile_concepts(
         list_existing_wiki_targets(wiki_dir)
         | {f"concepts/{s}" for s in planned_slugs}
         | {f"summaries/{doc_name}"}
+        | {f"entities/{s}" for s in entity_slugs}
     )
     known_targets_str = _format_known_targets(known_targets)
 
@@ -997,6 +932,12 @@ async def _compile_concepts(
                   doc_brief=doc_brief, concept_briefs=concept_briefs_map,
                   doc_type=doc_type)
 
+    # --- Step 5: Write entity pages and backlinks (code only) ---
+    if entities:
+        write_entity_pages(wiki_dir, entities, doc_name)
+        update_entity_index(wiki_dir, entities)
+        add_entity_backlinks(wiki_dir, doc_name, entity_slugs)
+
 
 async def compile_short_doc(
     doc_name: str,
@@ -1008,13 +949,15 @@ async def compile_short_doc(
     """Compile a short document using a multi-step LLM pipeline with caching.
 
     Step 1: Build base context A (schema + doc content), generate summary.
-    Steps 2-4: Delegated to ``_compile_concepts``.
+    Step 2: Entity extraction (GLiNER2 primary → LLM review).
+    Steps 3-5: Delegated to ``_compile_concepts``.
     """
     from openkb.config import load_config
 
     openkb_dir = kb_dir / ".openkb"
     config = load_config(openkb_dir / "config.yaml")
     language: str = config.get("language", "en")
+    entity_enabled: bool = config.get("entity_extraction", True)
 
     wiki_dir = kb_dir / "wiki"
     schema_md = get_agents_md(wiki_dir)
@@ -1031,10 +974,6 @@ async def compile_short_doc(
     ))}
 
     # --- Step 1: Generate summary (v1, held in memory) ---
-    # The summary is NOT written to disk yet — it's used as cache context
-    # for the plan + concept-generation calls, then rewritten into a final
-    # v2 (with a whitelist of known wikilink targets) inside
-    # _compile_concepts before being written to disk.
     summary_raw = _llm_call(model, [system_msg, doc_msg], "summary")
     try:
         summary_parsed = _parse_json(summary_raw)
@@ -1044,12 +983,30 @@ async def compile_short_doc(
         doc_brief = ""
         summary = summary_raw
 
-    # --- Steps 2-4: Concept plan → generate/update → summary rewrite → index ---
+    # --- Step 2: Entity extraction (parallel GLiNER2 + LLM) ---
+    entities = None
+    if entity_enabled:
+        try:
+            gliner_model = config.get("entity_gliner_model", "fastino/gliner2-large-v1")
+            confidence = config.get("entity_confidence_threshold", 0.5)
+            entity_model = config.get("entity_llm_model", "") or model
+            entities = await extract_entities(
+                content, entity_model, doc_name=doc_name,
+                gliner_model=gliner_model, confidence_threshold=confidence,
+            )
+            logger.info("Extracted %d entities for %s", len(entities), doc_name)
+        except Exception as exc:
+            logger.warning("Entity extraction failed for %s: %s", doc_name, exc)
+
+    # --- Steps 3-5: Concept plan → generate/update → summary rewrite → index ---
     await _compile_concepts(
         wiki_dir, kb_dir, model, system_msg, doc_msg,
         summary, doc_name, max_concurrency, doc_brief=doc_brief,
-        doc_type="short", rewrite_summary=True,
+        doc_type="short", rewrite_summary=True, entities=entities,
     )
+
+    # Snapshot wiki changes with jj
+    jjctl.describe(wiki_dir, f"compiled: {doc_name}")
 
 
 async def compile_long_doc(
@@ -1064,13 +1021,15 @@ async def compile_long_doc(
     """Compile a long (PageIndex) document's concepts and index.
 
     The summary page is already written by the indexer. This function
-    generates concept pages and updates the index.
+    extracts entities from the summary, generates concept pages, and
+    updates the index.
     """
     from openkb.config import load_config
 
     openkb_dir = kb_dir / ".openkb"
     config = load_config(openkb_dir / "config.yaml")
     language: str = config.get("language", "en")
+    entity_enabled: bool = config.get("entity_extraction", True)
 
     wiki_dir = kb_dir / "wiki"
     schema_md = get_agents_md(wiki_dir)
@@ -1088,9 +1047,27 @@ async def compile_long_doc(
     # --- Step 1: Generate overview ---
     overview = _llm_call(model, [system_msg, doc_msg], "overview")
 
-    # --- Steps 2-4: Concept plan → generate/update → index ---
+    # --- Step 2: Entity extraction from summary text (GLiNER2 primary + LLM review) ---
+    entities = None
+    if entity_enabled:
+        try:
+            gliner_model = config.get("entity_gliner_model", "fastino/gliner2-large-v1")
+            confidence = config.get("entity_confidence_threshold", 0.5)
+            entity_model = config.get("entity_llm_model", "") or model
+            entities = await extract_entities(
+                summary_content, entity_model, doc_name=doc_name,
+                gliner_model=gliner_model, confidence_threshold=confidence,
+            )
+            logger.info("Extracted %d entities for %s", len(entities), doc_name)
+        except Exception as exc:
+            logger.warning("Entity extraction failed for %s: %s", doc_name, exc)
+
+    # --- Steps 3-5: Concept plan → generate/update → index ---
     await _compile_concepts(
         wiki_dir, kb_dir, model, system_msg, doc_msg,
         overview, doc_name, max_concurrency, doc_brief=doc_description,
-        doc_type="pageindex",
+        doc_type="pageindex", entities=entities,
     )
+
+    # Snapshot wiki changes with jj
+    jjctl.describe(wiki_dir, f"compiled: {doc_name}")

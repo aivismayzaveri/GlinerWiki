@@ -268,8 +268,17 @@ def _render_blockquote(node: Any) -> Text:
             inner_blocks.append(_render_code_as_text(child))
             continue
         rendered = _render_block(child)
+        if rendered is None:
+            continue
         if isinstance(rendered, Text):
             inner_blocks.append(rendered)
+        else:
+            # Convert Group/Syntax/other renderables to Text
+            from rich.console import Console
+            console = Console(width=80, force_terminal=True, color_system=None)
+            with console.capture() as capture:
+                console.print(rendered, end="")
+            inner_blocks.append(Text(capture.get()))
 
     combined = Text()
     for i, block in enumerate(inner_blocks):

@@ -17,12 +17,12 @@ from openkb.converter import ConvertResult, convert_document, get_pdf_page_count
 
 class TestGetPdfPageCount:
     def test_returns_page_count(self, tmp_path):
-        """Mock pymupdf to return a doc with 5 pages."""
-        fake_doc = MagicMock()
-        fake_doc.page_count = 5
-        fake_doc.__enter__ = MagicMock(return_value=fake_doc)
-        fake_doc.__exit__ = MagicMock(return_value=False)
-        with patch("openkb.converter.pymupdf.open", return_value=fake_doc):
+        """Mock docling to return a document with 5 pages."""
+        fake_result = MagicMock()
+        fake_result.document.pages = {i: MagicMock() for i in range(1, 6)}
+        fake_converter = MagicMock()
+        fake_converter.convert.return_value = fake_result
+        with patch("openkb.docling_converter._get_converter", return_value=fake_converter):
             count = get_pdf_page_count(tmp_path / "fake.pdf")
         assert count == 5
 
@@ -81,24 +81,18 @@ class TestConvertDocumentMarkdown:
 
 
 class TestConvertDocumentPdfShort:
-    def test_short_pdf_converted_via_pymupdf(self, kb_dir, tmp_path):
-        """PDF under threshold is converted with pymupdf (convert_pdf_with_images)."""
+    def test_short_pdf_converted_via_docling(self, kb_dir, tmp_path):
+        """PDF under threshold is converted with docling (convert_to_markdown)."""
         src = tmp_path / "short.pdf"
         src.write_bytes(b"%PDF-1.4 fake content")
 
         with (
-            patch("openkb.converter.pymupdf.open") as mock_mu,
-            patch("openkb.converter.convert_pdf_with_images", return_value="# Short PDF\n\nConverted.") as mock_cpwi,
+            patch("openkb.converter.get_pdf_page_count", return_value=5),
+            patch("openkb.converter.convert_to_markdown", return_value="# Short PDF\n\nConverted.") as mock_ctm,
         ):
-            fake_doc = MagicMock()
-            fake_doc.page_count = 5  # below default threshold of 20
-            fake_doc.__enter__ = MagicMock(return_value=fake_doc)
-            fake_doc.__exit__ = MagicMock(return_value=False)
-            mock_mu.return_value = fake_doc
-
             result = convert_document(src, kb_dir)
 
-        mock_cpwi.assert_called_once()
+        mock_ctm.assert_called_once()
         assert result.skipped is False
         assert result.is_long_doc is False
         assert result.source_path is not None
@@ -116,15 +110,7 @@ class TestConvertDocumentPdfLong:
         src = tmp_path / "long.pdf"
         src.write_bytes(b"%PDF-1.4 fake long content")
 
-        with (
-            patch("openkb.converter.pymupdf.open") as mock_mu,
-        ):
-            fake_doc = MagicMock()
-            fake_doc.page_count = 200  # above threshold
-            fake_doc.__enter__ = MagicMock(return_value=fake_doc)
-            fake_doc.__exit__ = MagicMock(return_value=False)
-            mock_mu.return_value = fake_doc
-
+        with patch("openkb.converter.get_pdf_page_count", return_value=200):
             result = convert_document(src, kb_dir)
 
         assert result.is_long_doc is True

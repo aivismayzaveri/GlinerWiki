@@ -155,19 +155,23 @@ def _extract_wikilinks(text: str) -> list[str]:
 def list_existing_wiki_targets(wiki_dir: Path) -> set[str]:
     """Return the set of currently-existing wikilink targets on disk.
 
-    Includes every ``concepts/{stem}`` and ``summaries/{stem}`` for .md files
-    actually present in the wiki, plus ``index`` when ``index.md`` exists.
-    Used to seed the whitelist passed to :func:`strip_ghost_wikilinks` from
-    both the compile pipeline and any other code path that writes
-    LLM-generated content to the wiki (e.g. ``openkb query --save``).
+    Includes every ``concepts/{stem}``, ``summaries/{stem}``, and
+    ``entities/{stem}`` for .md files actually present in the wiki,
+    plus ``index`` when ``index.md`` exists. Used to seed the whitelist
+    passed to :func:`strip_ghost_wikilinks` from both the compile pipeline
+    and any other code path that writes LLM-generated content to the wiki
+    (e.g. ``openkb query --save``).
     """
     targets: set[str] = set()
     concepts_dir = wiki_dir / "concepts"
     summaries_dir = wiki_dir / "summaries"
+    entities_dir = wiki_dir / "entities"
     if concepts_dir.is_dir():
         targets.update(f"concepts/{p.stem}" for p in concepts_dir.glob("*.md"))
     if summaries_dir.is_dir():
         targets.update(f"summaries/{p.stem}" for p in summaries_dir.glob("*.md"))
+    if entities_dir.is_dir():
+        targets.update(f"entities/{p.stem}" for p in entities_dir.glob("*.md"))
     if (wiki_dir / "index.md").exists():
         targets.add("index")
     return targets
@@ -375,6 +379,446 @@ def check_index_sync(wiki: Path) -> list[str]:
     return sorted(issues)
 
 
+# ---------------------------------------------------------------------------
+# Entity lint: dedup and source validation
+# ---------------------------------------------------------------------------
+
+def _read_entity_meta(text: str) -> dict:
+    """Parse YAML-like frontmatter from an entity page.
+
+    Returns a dict with keys: type, aliases (list), sources (list), brief.
+    """
+    if not text.startswith("---"):
+        return {}
+    end = text.find("---", 3)
+    if end == -1:
+        return {}
+    fm_block = text[3:end].strip()
+    meta: dict = {}
+    for line in fm_block.split("\n"):
+        if ":" not in line:
+            continue
+        key, val = line.split(":", 1)
+        key = key.strip()
+        val = val.strip()
+        if key in ("aliases", "sources"):
+            if val.startswith("[") and val.endswith("]"):
+                meta[key] = [s.strip() for s in val[1:-1].split(",") if s.strip()]
+            else:
+                meta[key] = [val] if val else []
+        else:
+            meta[key] = val
+    return meta
+
+
+def _build_entity_index(entities_dir: Path) -> dict[str, dict]:
+    """Build an index of all entity pages on disk.
+
+    Returns a dict mapping slug → {"path": Path, "meta": dict, "text": str}.
+    """
+    index: dict[str, dict] = {}
+    if not entities_dir.is_dir():
+        return index
+    for path in sorted(entities_dir.glob("*.md")):
+        if path.name == "index.md":
+            continue
+        text = _read_md(path)
+        meta = _read_entity_meta(text)
+        index[path.stem] = {"path": path, "meta": meta, "text": text}
+    return index
+
+
+def _entity_name_tokens(name: str) -> set[str]:
+    """Normalize an entity name into a set of word tokens for fuzzy comparison.
+
+    Splits camelCase/PascalCase, strips common corporate suffixes and
+    punctuation, then splits on whitespace.
+    ``"OpenAI Inc."`` → ``{"open", "ai"}``,  ``"Tim Cook"`` →
+    ``{"tim", "cook"}``.
+    """
+    s = unicodedata.normalize("NFKC", name)
+    # Split camelCase/PascalCase BEFORE lowercasing: "OpenAI" → "Open AI"
+    s = re.sub(r"([a-z])([A-Z])", r"\1 \2", s)
+    s = s.lower()
+    s = re.sub(r"[^\w\s]", " ", s)
+    _STOP = {"inc", "corp", "ltd", "llc", "llp", "co",
+             "the", "a", "an", "and", "or", "of", "for"}
+    tokens = {t for t in s.split() if len(t) > 1 and t not in _STOP}
+    return tokens
+
+
+def _entity_names_similar(name_a: str, name_b: str) -> bool:
+    """Check if two entity names likely refer to the same thing.
+
+    Uses token-based Jaccard similarity with prefix matching to handle:
+    - ``"OpenAI Inc"`` vs ``"Open AI"`` (compound word splitting)
+    - ``"Tim Cook"`` vs ``"Timothy Cook"`` (prefix matching)
+    - ``"Apple"`` vs ``"Apple Inc"`` (subset matching)
+    """
+    tok_a = _entity_name_tokens(name_a)
+    tok_b = _entity_name_tokens(name_b)
+    if not tok_a or not tok_b:
+        return False
+
+    overlap = len(tok_a & tok_b)
+    union = len(tok_a | tok_b)
+
+    # Direct token overlap
+    if union > 0 and overlap / union >= 0.5:
+        return True
+
+    # Subset: one name's tokens are entirely contained in the other
+    # Catches "Apple" vs "Apple Inc", "Tim Cook" vs "Tim Cook Jr"
+    if tok_a <= tok_b or tok_b <= tok_a:
+        return True
+
+    # Prefix matching: "tim" matches "timothy", "ai" matches "artificial"
+    prefix_matches = 0
+    for ta in tok_a:
+        for tb in tok_b:
+            if ta.startswith(tb) or tb.startswith(ta):
+                prefix_matches += 1
+                break
+    effective_overlap = overlap + prefix_matches
+    if union > 0 and effective_overlap / union >= 0.5:
+        return True
+
+    return False
+
+
+def find_entity_duplicates(entities_dir: Path) -> list[list[str]]:
+    """Find entity pages that are duplicates or near-duplicates.
+
+    Detection:
+    1. Exact match: two slugs whose canonical names normalize identically
+       (via ``_normalize_target``).
+    2. Fuzzy match: two slugs whose name tokens have Jaccard similarity ≥ 0.6
+       (catches ``"OpenAI Inc"`` vs ``"Open AI"``).
+
+    Returns a list of groups, where each group is a list of ≥2 slugs that
+    should be merged.  Groups are sorted largest-first.
+    """
+    index = _build_entity_index(entities_dir)
+    if len(index) < 2:
+        return []
+
+    # --- Pass 1: exact normalized-name grouping ---
+    norm_to_slugs: dict[str, list[str]] = {}
+    for slug, entry in index.items():
+        canonical = _extract_entity_name(entry["text"], slug)
+        norm = _normalize_target(canonical)
+        norm_to_slugs.setdefault(norm, []).append(slug)
+
+    exact_groups = [slugs for slugs in norm_to_slugs.values() if len(slugs) > 1]
+
+    # --- Pass 2: fuzzy token-overlap grouping ---
+    slugs = list(index.keys())
+    name_cache: dict[str, str] = {}
+    for slug in slugs:
+        name_cache[slug] = _extract_entity_name(index[slug]["text"], slug)
+
+    fuzzy_groups: list[list[str]] = []
+    used: set[str] = set()
+    for i, a in enumerate(slugs):
+        if a in used:
+            continue
+        group = [a]
+        for b in slugs[i + 1:]:
+            if b in used:
+                continue
+            if _entity_names_similar(name_cache[a], name_cache[b]):
+                group.append(b)
+                used.add(b)
+        if len(group) > 1:
+            used.add(a)
+            fuzzy_groups.append(group)
+
+    # Merge overlapping groups from both passes
+    all_groups = exact_groups + fuzzy_groups
+    merged: list[list[str]] = []
+    assigned: set[str] = set()
+    for group in sorted(all_groups, key=len, reverse=True):
+        group_set = set(group)
+        if group_set & assigned:
+            continue
+        merged.append(sorted(group_set))
+        assigned |= group_set
+
+    return sorted(merged, key=len, reverse=True)
+
+
+def _extract_entity_name(text: str, slug: str) -> str:
+    """Extract the canonical entity name from a page.
+
+    Tries, in order:
+    1. The first H1 heading (``# Entity Name``)
+    2. The slug with hyphens replaced by spaces
+    """
+    for line in text.split("\n"):
+        if line.startswith("# ") and not line.startswith("## "):
+            return line[2:].strip()
+    return slug.replace("-", " ")
+
+
+def _build_merged_entity_page(
+    canonical_slug: str,
+    entity_type: str,
+    aliases: list[str],
+    sources: list[str],
+    description: str,
+    existing_text: str = "",
+) -> str:
+    """Build a merged entity page, combining metadata from duplicates."""
+    if existing_text:
+        existing_meta = _read_entity_meta(existing_text)
+        old_aliases = set(existing_meta.get("aliases", []))
+        old_sources = set(existing_meta.get("sources", []))
+        all_aliases = sorted(old_aliases | set(aliases))
+        all_sources = sorted(old_sources | set(sources))
+        desc = description or existing_meta.get("brief", "")
+
+        fm_lines = [f"type: {entity_type}"]
+        if all_aliases:
+            fm_lines.append(f"aliases: [{', '.join(all_aliases)}]")
+        if all_sources:
+            fm_lines.append(f"sources: [{', '.join(all_sources)}]")
+        if desc:
+            fm_lines.append(f"brief: {desc}")
+        frontmatter = "---\n" + "\n".join(fm_lines) + "\n---\n"
+
+        # Preserve existing body, add missing mentions
+        body_end = existing_text.find("---", existing_text.find("---", 3) + 3) if existing_text.count("---") >= 4 else -1
+        if body_end != -1:
+            body = existing_text[body_end + 3:]
+        else:
+            _, body = existing_text.split("---", 2)[-1], ""
+        if "---" in existing_text:
+            parts = existing_text.split("---")
+            body = "---".join(parts[2:]) if len(parts) > 2 else ""
+        else:
+            body = existing_text
+
+        # Add missing source mentions
+        for src in sources:
+            link = f"[[summaries/{src}]]"
+            if link not in body and "## Mentions" in body:
+                body = body.rstrip() + f"\n- {link}"
+
+        return frontmatter + body
+
+    # New page
+    fm_lines = [f"type: {entity_type}"]
+    if aliases:
+        fm_lines.append(f"aliases: [{', '.join(aliases)}]")
+    if sources:
+        source_links = [f"summaries/{s}" for s in sources]
+        fm_lines.append(f"sources: [{', '.join(source_links)}]")
+    if description:
+        fm_lines.append(f"brief: {description}")
+    frontmatter = "---\n" + "\n".join(fm_lines) + "\n---\n"
+
+    heading = canonical_slug.replace("-", " ").title()
+    body = f"\n# {heading}\n"
+    if description:
+        body += f"\n{description}\n"
+    body += "\n## Mentions\n"
+    for src in sources:
+        body += f"- [[summaries/{src}]]\n"
+    body += "\n## Related Entities\n"
+    body += "\n## Related Concepts\n"
+
+    return frontmatter + body
+
+
+def _rebuild_entity_index(wiki: Path) -> None:
+    """Rebuild wiki/entities/index.md from entity pages on disk."""
+    # Canonical type order (mirrors entity_extractor.ENTITY_TYPES keys)
+    _ENTITY_TYPE_ORDER = [
+        "PERSON", "ORGANIZATION", "LOCATION", "FACILITY", "EVENT",
+        "DATE", "TIME", "MONEY", "QUANTITY", "PRODUCT", "WORK_OF_ART",
+        "CONCEPT", "TECHNOLOGY", "JOB_TITLE", "LAW", "LANGUAGE",
+        "NATIONALITY", "IDENTIFIER", "FILE", "MATERIAL",
+    ]
+
+    entities_dir = wiki / "entities"
+    if not entities_dir.is_dir():
+        return
+
+    # Parse all entity pages
+    entries: dict[str, list[str]] = {}
+    for path in sorted(entities_dir.glob("*.md")):
+        if path.name == "index.md":
+            continue
+        meta = _read_entity_meta(_read_md(path))
+        etype = meta.get("type", "CONCEPT")
+        desc = meta.get("brief", "")
+        entry = f"- [[entities/{path.stem}]]"
+        if desc:
+            entry += f" — {desc}"
+        entries.setdefault(etype, []).append(entry)
+
+    lines = ["# Entity Index\n"]
+    for etype in _ENTITY_TYPE_ORDER:
+        type_entries = entries.get(etype, [])
+        if type_entries:
+            lines.append(f"\n## {etype}")
+            lines.extend(sorted(type_entries))
+
+    (entities_dir / "index.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def fix_entity_duplicates(wiki: Path) -> tuple[int, list[str]]:
+    """Merge duplicate entity pages in place.
+
+    For each group of duplicates, the page with a description (or longest
+    name) is kept as canonical.  Aliases and sources from all pages in the
+    group are merged into the canonical page.  Duplicate files are deleted
+    and the entity index is rebuilt.
+
+    Self-contained — does not import from entity_writer or entity_extractor
+    to avoid pulling in heavy dependencies (litellm, gliner2).
+
+    Args:
+        wiki: Path to the wiki root directory.
+
+    Returns:
+        Tuple of ``(duplicates_removed, merge_descriptions)``.
+    """
+    entities_dir = wiki / "entities"
+    if not entities_dir.is_dir():
+        return 0, []
+
+    groups = find_entity_duplicates(entities_dir)
+    if not groups:
+        return 0, []
+
+    index = _build_entity_index(entities_dir)
+    total_removed = 0
+    descriptions: list[str] = []
+
+    for group in groups:
+        # Pick canonical: prefer page with a description, then longest name
+        def _score(slug: str) -> tuple[int, int]:
+            meta = index[slug]["meta"]
+            has_desc = 1 if meta.get("brief") else 0
+            name_len = len(slug)
+            return (has_desc, name_len)
+
+        group_sorted = sorted(group, key=_score, reverse=True)
+        canonical_slug = group_sorted[0]
+        duplicate_slugs = group_sorted[1:]
+
+        # Collect all aliases and sources from the group
+        all_aliases: set[str] = set()
+        all_sources: set[str] = set()
+        description = ""
+        entity_type = "CONCEPT"
+
+        for slug in group:
+            meta = index[slug]["meta"]
+            all_aliases.update(meta.get("aliases", []))
+            all_sources.update(meta.get("sources", []))
+            if not description and meta.get("brief"):
+                description = meta["brief"]
+            if meta.get("type") and slug == canonical_slug:
+                entity_type = meta["type"]
+
+        # Remove canonical slug from aliases
+        all_aliases.discard(canonical_slug.replace("-", " "))
+        all_aliases.discard(canonical_slug)
+
+        # Build merged page and write
+        existing = index[canonical_slug]["text"]
+        merged_text = _build_merged_entity_page(
+            canonical_slug, entity_type,
+            sorted(all_aliases), sorted(all_sources),
+            description, existing_text=existing,
+        )
+        (entities_dir / f"{canonical_slug}.md").write_text(
+            merged_text, encoding="utf-8",
+        )
+
+        # Delete duplicate pages
+        for slug in duplicate_slugs:
+            dup_path = entities_dir / f"{slug}.md"
+            if dup_path.exists():
+                dup_path.unlink()
+                total_removed += 1
+
+        kept = f"entities/{canonical_slug}"
+        removed = ", ".join(f"entities/{s}" for s in duplicate_slugs)
+        descriptions.append(f"{removed} → {kept}")
+
+    # Rebuild entity index
+    _rebuild_entity_index(wiki)
+
+    return total_removed, descriptions
+
+
+def check_entity_sources(wiki: Path) -> list[str]:
+    """Validate that all entity source references point to existing summary files.
+
+    Returns a list of warning strings for each missing source.
+    """
+    entities_dir = wiki / "entities"
+    if not entities_dir.is_dir():
+        return []
+
+    warnings: list[str] = []
+    summaries_dir = wiki / "summaries"
+
+    for path in sorted(entities_dir.glob("*.md")):
+        if path.name == "index.md":
+            continue
+        meta = _read_entity_meta(_read_md(path))
+        for source in meta.get("sources", []):
+            # source is like "summaries/paper.md"
+            source_path = wiki / source
+            if not source_path.exists():
+                warnings.append(
+                    f"entities/{path.stem} references missing source: {source}"
+                )
+    return warnings
+
+
+def run_entity_lint(wiki: Path) -> str:
+    """Run entity-specific lint checks and return a formatted report section.
+
+    Checks:
+    - Duplicate entities (exact and fuzzy name matches)
+    - Missing source references
+    """
+    entities_dir = wiki / "entities"
+    if not entities_dir.is_dir():
+        return "### Entity Checks\n\nNo entities directory found.\n"
+
+    groups = find_entity_duplicates(entities_dir)
+    source_issues = check_entity_sources(wiki)
+
+    lines = ["### Entity Checks"]
+
+    # Duplicates
+    dup_count = sum(len(g) - 1 for g in groups)
+    lines.append(f"\nDuplicate entities ({dup_count} to merge in {len(groups)} group(s)):")
+    if groups:
+        for group in groups:
+            names = ", ".join(f"entities/{s}" for s in group)
+            lines.append(f"- {names}")
+    else:
+        lines.append("No duplicates found.")
+    lines.append("")
+
+    # Source validation
+    lines.append(f"Missing entity sources ({len(source_issues)}):")
+    if source_issues:
+        for issue in source_issues:
+            lines.append(f"- {issue}")
+    else:
+        lines.append("All entity sources are valid.")
+
+    return "\n".join(lines)
+
+
 def run_structural_lint(kb_dir: Path) -> str:
     """Run all structural lint checks and return a formatted Markdown report.
 
@@ -428,5 +872,9 @@ def run_structural_lint(kb_dir: Path) -> str:
             lines.append(f"- {issue}")
     else:
         lines.append("Index is in sync.")
+    lines.append("")
+
+    # Entity checks
+    lines.append(run_entity_lint(wiki))
 
     return "\n".join(lines)

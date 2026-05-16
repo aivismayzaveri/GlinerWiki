@@ -10,16 +10,19 @@ AGENTS_MD = """\
 - sources/images/ — Extracted images from documents, referenced by sources.
 - summaries/ — One per source document. Summary of key content.
 - concepts/ — Cross-document topic synthesis. Created when a theme spans multiple documents.
+- entities/ — Named entities extracted from documents (people, orgs, technologies, etc.).
 - explorations/ — Saved query results, analyses, and comparisons worth keeping.
 - reports/ — Lint health check reports. Auto-generated.
 
 ## Special Files
 - index.md — Content catalog: every page with link, one-line summary, organized by category.
+- entities/index.md — Entity catalog grouped by type (PERSON, ORGANIZATION, etc.).
 - log.md — Chronological append-only record of operations (ingests, queries, lints).
 
 ## Page Types
 - **Summary Page** (summaries/): Key content of a single source document.
 - **Concept Page** (concepts/): Cross-document topic synthesis with [[wikilinks]].
+- **Entity Page** (entities/): Named entity with type, aliases, mentions, and cross-references.
 - **Exploration Page** (explorations/): Saved query results — analyses, comparisons, syntheses.
 - **Index Page** (index.md): One-liner summary of every page in the wiki. Auto-maintained.
 
@@ -34,7 +37,7 @@ Each log entry: `## [YYYY-MM-DD HH:MM:SS] operation | description`
 Operations: ingest, query, lint
 
 ## Format
-- Use [[wikilink]] to link other wiki pages (e.g., [[concepts/attention]])
+- Use [[wikilink]] to link other wiki pages (e.g., [[concepts/attention]], [[entities/tim-cook]])
 - Standard Markdown heading hierarchy
 - Keep each page focused on a single topic
 - Do not include YAML frontmatter (---) in generated content; it is managed by code

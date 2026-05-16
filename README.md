@@ -24,14 +24,16 @@ Traditional RAG rediscovers knowledge from scratch on every query. Nothing accum
 
 ### Features
 
-- **Broad format support** — PDF, Word, Markdown, PowerPoint, HTML, Excel, text, and more via markitdown
+- **Broad format support** — PDF, Word, Markdown, PowerPoint, HTML, Excel, text, images, and more via docling
 - **Scale to long documents** — Long and complex documents are handled via [PageIndex](https://github.com/VectifyAI/PageIndex) tree indexing, enabling accurate, vectorless long-context retrieval
-- **Native multi-modality** — Retrieves and understands figures, tables, and images, not just text
+- **Native multi-modality** — Retrieves and understands figures, tables, and images, not just text. Images are described automatically via SmolVLM vision model
 - **Compiled Wiki** — LLM manages and compiles your documents into summaries, concept pages, and cross-links, all kept in sync
+- **Entity Extraction** — Dual extraction (GLiNER2 + LLM) identifies people, organizations, technologies, and 17 more entity types, with deduplication and cross-references
 - **Query** — Ask questions (one-off) against your wiki. The LLM navigates your compiled knowledge to answer
 - **Interactive Chat** — Multi-turn conversations with persisted sessions you can resume across runs
 - **Lint** — Health checks find contradictions, gaps, orphans, and stale content
 - **Watch mode** — Drop files into `raw/`, wiki updates automatically
+- **Wiki version control** — Every compile auto-snapshots the wiki via [jj](https://github.com/jj-vcs/jj). Browse history, diff revisions, restore files — no manual commits
 - **Obsidian compatible** — Wiki is plain `.md` files with `[[wikilinks]]`. Open in Obsidian for graph view and browsing
 
 # 🚀 Getting Started
@@ -100,7 +102,7 @@ LLM_API_KEY=your_llm_api_key
 ```
 raw/                              You drop files here
  │
- ├─ Short docs ──→ markitdown ──→ LLM reads full text
+ ├─ Short docs ──→ docling ────→ LLM reads full text
  │                                     │
  ├─ Long PDFs ──→ PageIndex ────→ LLM reads document trees
  │                                     │
@@ -115,6 +117,7 @@ wiki/
  ├── sources/            Full-text conversions
  ├── summaries/          Per-document summaries
  ├── concepts/           Cross-document synthesis ← the good stuff
+ ├── entities/           Named entities (people, orgs, technologies, etc.)
  ├── explorations/       Saved query results
  └── reports/            Lint reports
 ```
@@ -123,8 +126,8 @@ wiki/
 
 | | Short documents | Long documents (PDF ≥ 20 pages) |
 |---|---|---|
-| **Convert** | markitdown → Markdown | PageIndex → tree index + summaries |
-| **Images** | Extracted inline (pymupdf) | Extracted by PageIndex |
+| **Convert** | docling → Markdown | PageIndex → tree index + summaries |
+| **Images** | Extracted + described via SmolVLM-256M (docling) | Extracted by PageIndex |
 | **LLM reads** | Full text | Document trees |
 | **Result** | summary + concepts | summary + concepts |
 
@@ -155,6 +158,8 @@ A single source might touch 10-15 wiki pages. Knowledge accumulates: each docume
 | `openkb lint` | Run structural + knowledge health checks |
 | `openkb list` | List indexed documents and concepts |
 | `openkb status` | Show knowledge base stats |
+| <code>openkb&nbsp;history&nbsp;[file]</code> | Show wiki version history (optionally filter by file) |
+| <code>openkb&nbsp;diff&nbsp;[revision]</code> | Show wiki changes at a revision (default: latest) |
 
 <!-- | `openkb lint --fix` | Auto-fix what it can | -->
 
@@ -235,13 +240,35 @@ OpenKB's wiki is a directory of Markdown files with `[[wikilinks]]`. Obsidian re
 3. Use graph view to see knowledge connections
 4. Use Obsidian Web Clipper to add web articles to `raw/`
 
+### Wiki Version Control (jj)
+
+OpenKB uses [jj (Jujutsu)](https://github.com/jj-vcs/jj) for automatic version control of the `wiki/` folder. Every `openkb add` auto-snapshots wiki changes — no manual commits needed.
+
+```bash
+openkb history                       # Show all wiki changes
+openkb history concepts/attention.md # Changes to a specific file
+openkb diff                          # Changes at latest revision
+openkb diff @-                       # Changes at previous revision
+```
+
+For advanced queries, run jj directly inside `wiki/`:
+
+```bash
+cd wiki/
+jj log                                        # Full history
+jj file show concepts/attention.md -r @-      # File at previous revision
+jj log -r 'files("concepts/attention.md")'    # Revisions touching a file
+jj log -r 'description("compiled: paper")'    # Search by description
+jj restore concepts/attention.md --from @---  # Restore to earlier state
+```
+
 # 🧭 Learn More
 
 ### Compared to Karpathy's Approach
 
 | | Karpathy's workflow | OpenKB |
 |---|---|---|
-| Short documents | LLM reads directly | markitdown → LLM reads |
+| Short documents | LLM reads directly | docling → LLM reads |
 | Long documents | Context limits, context rot | PageIndex tree index |
 | Supported formats | Web clipper → .md | PDF, Word, PPT, Excel, HTML, text, CSV, .md |
 | Wiki compilation | LLM agent | LLM agent (same) |
@@ -250,11 +277,12 @@ OpenKB's wiki is a directory of Markdown files with `[[wikilinks]]`. Obsidian re
 ### The Stack
 
 - [PageIndex](https://github.com/VectifyAI/PageIndex) — Vectorless, reasoning-based document indexing and retrieval
-- [markitdown](https://github.com/microsoft/markitdown) — Universal file-to-markdown conversion
+- [Docling](https://github.com/docling-project/docling) — Universal document-to-markdown conversion with built-in image description via SmolVLM vision model
 - [OpenAI Agents SDK](https://github.com/openai/openai-agents-python) — Agent framework (supports non-OpenAI models via LiteLLM)
 - [LiteLLM](https://github.com/BerriAI/litellm) — Multi-provider LLM gateway
 - [Click](https://click.palletsprojects.com/) — CLI framework
 - [watchdog](https://github.com/gorakhargosh/watchdog) — Filesystem monitoring
+- [jj (Jujutsu)](https://github.com/jj-vcs/jj) — Automatic wiki version control
 
 ### Roadmap
 

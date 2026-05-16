@@ -1,12 +1,6 @@
 """OpenKB CLI — command-line interface for the knowledge base workflow."""
 from __future__ import annotations
 
-# Silence import-time warnings (e.g. pydub's missing-ffmpeg warning emitted
-# when markitdown pulls it in). markitdown later clobbers the filters during
-# its own import, so we re-apply after all imports below.
-import warnings
-warnings.filterwarnings("ignore")
-
 import asyncio
 import json
 import logging
@@ -30,10 +24,6 @@ from openkb.config import DEFAULT_CONFIG, load_config, save_config, load_global_
 from openkb.converter import convert_document
 from openkb.log import append_log
 from openkb.schema import AGENTS_MD
-
-# Suppress warnings after all imports — markitdown overrides filters at import time
-import warnings
-warnings.filterwarnings("ignore")
 
 load_dotenv()  # load from cwd (covers running inside the KB dir)
 
@@ -285,6 +275,7 @@ def init():
     Path("wiki/sources/images").mkdir(parents=True, exist_ok=True)
     Path("wiki/summaries").mkdir(parents=True, exist_ok=True)
     Path("wiki/concepts").mkdir(parents=True, exist_ok=True)
+    Path("wiki/entities").mkdir(parents=True, exist_ok=True)
 
     # Write wiki files
     Path("wiki/AGENTS.md").write_text(AGENTS_MD, encoding="utf-8")
@@ -294,12 +285,29 @@ def init():
     )
     Path("wiki/log.md").write_text("# Operations Log\n\n", encoding="utf-8")
 
+    # Initialize jj version control inside wiki/
+    import subprocess
+    try:
+        subprocess.run(
+            ["jj", "git", "init"],
+            cwd="wiki", capture_output=True, text=True, check=True,
+        )
+        click.echo("Initialized jj version control in wiki/.")
+    except FileNotFoundError:
+        click.echo("Note: jj not found — wiki version control disabled. Install jj from https://github.com/jj-vcs/jj")
+    except subprocess.CalledProcessError as exc:
+        click.echo(f"Note: jj init failed: {exc.stderr.strip()}")
+
     # Create .openkb/ state directory
     openkb_dir.mkdir()
     config = {
         "model": model,
         "language": DEFAULT_CONFIG["language"],
         "pageindex_threshold": DEFAULT_CONFIG["pageindex_threshold"],
+        "entity_extraction": DEFAULT_CONFIG["entity_extraction"],
+        "entity_confidence_threshold": DEFAULT_CONFIG["entity_confidence_threshold"],
+        "entity_gliner_model": DEFAULT_CONFIG["entity_gliner_model"],
+        "entity_llm_model": DEFAULT_CONFIG["entity_llm_model"],
     }
     save_config(openkb_dir / "config.yaml", config)
     (openkb_dir / "hashes.json").write_text(json.dumps({}), encoding="utf-8")
@@ -610,8 +618,8 @@ async def run_lint(kb_dir: Path) -> Path | None:
 
 @cli.command()
 @click.option("--fix", is_flag=True, default=False,
-              help="Rewrite broken [[wikilinks]] in place (fuzzy match) or "
-                   "strip to plain text when no match. Runs before the report.")
+              help="Auto-fix issues: rewrite broken [[wikilinks]] (fuzzy match), "
+                   "merge duplicate entity pages, strip invalid links.")
 @click.pass_context
 def lint(ctx, fix):
     """Lint the knowledge base for structural and semantic inconsistencies."""
@@ -620,14 +628,24 @@ def lint(ctx, fix):
         click.echo("No knowledge base found. Run `openkb init` first.")
         return
     if fix:
-        from openkb.lint import fix_broken_links
+        from openkb.lint import fix_broken_links, fix_entity_duplicates
+
         files_changed, ghosts = fix_broken_links(kb_dir / "wiki")
         if files_changed:
             click.echo(
                 f"Fixed {ghosts} wikilink(s) across {files_changed} file(s)."
             )
         else:
-            click.echo("Nothing to fix — all wikilinks resolve.")
+            click.echo("All wikilinks resolve.")
+
+        removed, merges = fix_entity_duplicates(kb_dir / "wiki")
+        if removed:
+            click.echo(f"Merged {removed} duplicate entity page(s):")
+            for desc in merges:
+                click.echo(f"  {desc}")
+        else:
+            click.echo("No duplicate entities found.")
+
     asyncio.run(run_lint(kb_dir))
 
 
@@ -675,6 +693,15 @@ def print_list(kb_dir: Path) -> None:
             for c in concepts:
                 click.echo(f"  - {c}")
 
+    # Display entities
+    entities_dir = kb_dir / "wiki" / "entities"
+    if entities_dir.exists():
+        entities = sorted(p.stem for p in entities_dir.glob("*.md") if p.name != "index.md")
+        if entities:
+            click.echo(f"\nEntities ({len(entities)}):")
+            for e in entities:
+                click.echo(f"  - {e}")
+
     # Display reports
     reports_dir = kb_dir / "wiki" / "reports"
     if reports_dir.exists():
@@ -699,7 +726,7 @@ def list_cmd(ctx):
 def print_status(kb_dir: Path) -> None:
     """Print knowledge base status. Usable from CLI and chat REPL."""
     wiki_dir = kb_dir / "wiki"
-    subdirs = ["sources", "summaries", "concepts", "reports"]
+    subdirs = ["sources", "summaries", "concepts", "entities", "reports"]
 
     click.echo("Knowledge Base Status:")
     click.echo(f"  {'Directory':<20} {'Files':<10}")
@@ -756,3 +783,52 @@ def status(ctx):
         click.echo("No knowledge base found. Run `openkb init` first.")
         return
     print_status(kb_dir)
+
+
+@cli.command()
+@click.argument("file", required=False, default=None)
+@click.option("-n", "--limit", default=20, help="Number of revisions to show.")
+@click.pass_context
+def history(ctx, file, limit):
+    """Show wiki version history. Optionally filter by FILE path."""
+    kb_dir = _find_kb_dir(ctx.obj.get("kb_dir_override"))
+    if kb_dir is None:
+        click.echo("No knowledge base found. Run `openkb init` first.")
+        return
+
+    from openkb.jj import log, is_initialized
+
+    wiki_dir = kb_dir / "wiki"
+    if not is_initialized(wiki_dir):
+        click.echo("Wiki version control not initialized. Run `openkb init` again with jj installed.")
+        return
+
+    result = log(wiki_dir, limit=limit, file_path=file)
+    if result is None:
+        click.echo("Failed to read wiki history.")
+        return
+    click.echo(result)
+
+
+@cli.command()
+@click.argument("revision", required=False, default="@")
+@click.pass_context
+def diff(ctx, revision):
+    """Show wiki changes at REVISION (default: latest)."""
+    kb_dir = _find_kb_dir(ctx.obj.get("kb_dir_override"))
+    if kb_dir is None:
+        click.echo("No knowledge base found. Run `openkb init` first.")
+        return
+
+    from openkb.jj import diff as jj_diff, is_initialized
+
+    wiki_dir = kb_dir / "wiki"
+    if not is_initialized(wiki_dir):
+        click.echo("Wiki version control not initialized. Run `openkb init` again with jj installed.")
+        return
+
+    result = jj_diff(wiki_dir, revision=revision)
+    if result is None:
+        click.echo("Failed to read wiki diff.")
+        return
+    click.echo(result)
