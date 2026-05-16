@@ -110,15 +110,15 @@ def _build_entity_page(
         else:
             body = existing_body
 
-        # Add LLM-inferred related concepts
-        if entity.related_concepts:
+        # Add LLM-inferred related entities
+        if entity.related_entities:
             lines = body.split("\n")
-            ensure_h2_section(lines, "## Related Concepts")
-            for concept_name in entity.related_concepts:
-                concept_slug = _sanitize_concept_slug(concept_name)
-                entry = f"- [[concepts/{concept_slug}]]"
+            ensure_h2_section(lines, "## Related Entities")
+            for entity_name in entity.related_entities:
+                entity_slug = _sanitize_entity_slug(entity_name)
+                entry = f"- [[entities/{entity_slug}]]"
                 if entry not in body:
-                    insert_section_entry(lines, "## Related Concepts", entry)
+                    insert_section_entry(lines, "## Related Entities", entry)
             body = "\n".join(lines)
 
         return frontmatter + "\n" + body
@@ -144,13 +144,11 @@ def _build_entity_page(
     if source_link:
         body += f"- [[{source_link}]]\n"
 
+    # LLM-inferred related entities
     body += "\n## Related Entities\n"
-
-    # LLM-inferred related concepts
-    body += "\n## Related Concepts\n"
-    for concept_name in entity.related_concepts:
-        concept_slug = _sanitize_concept_slug(concept_name)
-        body += f"- [[concepts/{concept_slug}]]\n"
+    for entity_name in entity.related_entities:
+        entity_slug = _sanitize_entity_slug(entity_name)
+        body += f"- [[entities/{entity_slug}]]\n"
 
     return frontmatter + body
 

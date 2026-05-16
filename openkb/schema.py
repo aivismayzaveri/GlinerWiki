@@ -70,7 +70,7 @@ Operations: ingest, query, lint
 
 ## Format
 - Use [[wikilink]] to link other wiki pages (e.g., [[concepts/attention]], [[entities/tim-cook]])
-- Entity pages link to related concepts via ## Related Concepts
+- Entity pages link to related entities via ## Related Entities
 - Concept pages link to related entities via ## Related Entities
 - Standard Markdown heading hierarchy
 - Keep each page focused on a single topic

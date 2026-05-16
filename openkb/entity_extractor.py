@@ -154,8 +154,6 @@ class MergedEntity:
     fact_text: str = ""  # for DATE/TIME: natural-language fact this date grounds
     valid_from: str = ""  # for DATE/TIME: start date or date value
     valid_to: str = "open"  # for DATE/TIME: "open" or end date
-    valid_from: str = ""  # for DATE/TIME: start date or date value
-    valid_to: str = "open"  # for DATE/TIME: "open" or end date
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +417,8 @@ document. Your job is to review, correct, merge, and enrich them.
 {entity_types}
 
 ## Relationship inference:
-- For entities: set `related_concepts` to any abstract concept names this entity relates to (for wiki cross-linking to concept pages created by the LLM concept planner)
+- For entities: set `related_entities` to any other named entity names this entity relates to (for cross-linking to entity wiki pages, e.g. "Google" relates to "Mountain View" and "Sundar Pichai")
+- Do NOT use `related_concepts` — abstract concepts are created by the LLM concept planner, not by GLiNER2
 
 ## Temporal entities (DATE, TIME):
 For DATE or TIME entities, ALSO extract:
@@ -432,7 +431,7 @@ Return a JSON array of objects with keys:
 - type: one of the valid types above
 - description: brief contextual description
 - aliases: list of alternative names/abbreviations
-- related_concepts: list of concept names this entity relates to (for cross-linking)
+- related_entities: list of entity names this entity relates to (for cross-linking to entity pages)
 - fact: (DATE/TIME only) the natural-language fact this date anchors
 - valid_from: (DATE/TIME only) the date value itself (e.g. "2015", "Q3 2025")
 - valid_to: (DATE/TIME only) "open" if still true, or an end date if stated
@@ -546,7 +545,7 @@ def review_entities_llm(
             chunk_index=0,
             category=category,
             temporal_ref=item.get("temporal_ref", "") or "",
-            related_concepts=item.get("related_concepts", []) or [],
+            related_entities=item.get("related_entities", []) or [],
             fact_text=item.get("fact", "") or "",
         ))
 
@@ -587,17 +586,17 @@ def merge_entities(
             description = reviewed[0].description
             category = reviewed[0].category
             temporal_ref = reviewed[0].temporal_ref
-            # Merge related_concepts across group
-            related_concepts: list[str] = []
+            # Merge related_entities across group
+            related_entities: list[str] = []
             for e in reviewed:
-                related_concepts.extend(e.related_concepts)
+                related_entities.extend(e.related_entities)
         else:
             canonical = max(group, key=lambda e: len(e.text)).text
             entity_type = group[0].entity_type
             description = ""
             category = _classify_category(entity_type)
             temporal_ref = ""
-            related_concepts = []
+            related_entities = []
 
         # Merge fact_text / valid_from / valid_to for temporal entities
         fact_text = ""
@@ -631,7 +630,7 @@ def merge_entities(
             sources=[doc_name] if doc_name else [],
             category=category,
             temporal_ref=temporal_ref,
-            related_concepts=sorted(set(related_concepts)),
+            related_entities=sorted(set(related_entities)),
             fact_text=fact_text,
             valid_from=valid_from,
             valid_to=valid_to,
