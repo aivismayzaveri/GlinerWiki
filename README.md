@@ -30,7 +30,7 @@ Traditional RAG rediscovers knowledge from scratch on every query. Nothing accum
 - **Scale to long documents** — Long and complex documents are handled via [PageIndex](https://github.com/VectifyAI/PageIndex) tree indexing, enabling accurate, vectorless long-context retrieval
 - **Native multi-modality** — Retrieves and understands figures, tables, and images, not just text. Images are described automatically via SmolVLM vision model
 - **Compiled Wiki** — LLM manages and compiles your documents into summaries, concept pages, and cross-links, all kept in sync
-- **Entity Extraction (GLiNER2 + LLM)** — Dual extraction pipeline: GLiNER2 identifies 20 entity types (people, orgs, technologies, concepts, etc.) at the sentence level, then LLM reviews, corrects, and enriches with context-aware deduplication. Entities get their own wiki pages with bidirectional backlinks
+- **Entity Extraction (GLiNER2 + LLM)** — Dual extraction pipeline: GLiNER2 schema-based extraction with rich descriptions per entity type for high accuracy (20 types: people, orgs, technologies, concepts, etc.), then LLM reviews, corrects, and enriches with context-aware deduplication. Entities get their own wiki pages with bidirectional backlinks
 - **Query** — Ask questions (one-off) against your wiki. The LLM navigates your compiled knowledge to answer
 - **Interactive Chat** — Multi-turn conversations with persisted sessions you can resume across runs
 - **Enhanced Lint** — Structural + semantic health checks: broken wikilinks, orphaned pages, missing entries, index sync, contradictions, gaps, and stale content
@@ -225,7 +225,7 @@ pageindex_threshold: 20          # PDF pages threshold for PageIndex
 entity_extraction: true          # Enable GLiNER2 + LLM entity extraction
 entity_llm_model: ""             # Entity LLM model (empty = use main model)
 entity_gliner_model: "fastino/gliner2-large-v1"  # GLiNER2 model for NER
-entity_confidence_threshold: 0.5 # GLiNER2 confidence cutoff
+entity_confidence_threshold: 0.7 # GLiNER2 confidence cutoff (0.0-1.0)
 ```
 
 ### Environment Variables

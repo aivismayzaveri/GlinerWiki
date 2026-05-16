@@ -43,29 +43,33 @@ ENTITY_TYPES: dict[str, str] = {
     "MATERIAL": "Chemical elements, materials, substances, compounds",
 }
 
-# GLiNER2-friendly labels (lowercase, descriptive)
-_GLINER_LABELS: dict[str, str] = {
-    "PERSON": "person names, fictional characters",
-    "ORGANIZATION": "companies, agencies, institutions, teams",
-    "LOCATION": "cities, countries, continents, geographical features",
-    "FACILITY": "buildings, airports, highways, infrastructure",
-    "EVENT": "named events, conferences, wars, disasters",
-    "DATE": "calendar dates, date expressions, date ranges",
-    "TIME": "time expressions, durations, time periods",
-    "MONEY": "monetary values with currency",
-    "QUANTITY": "measurements, counts, percentages, ratios",
-    "PRODUCT": "products, models, versions, brands",
-    "WORK_OF_ART": "books, songs, paintings, films, articles",
-    "CONCEPT": "abstract ideas, theories, methodologies",
-    "TECHNOLOGY": "software, hardware, protocols, standards, frameworks",
-    "JOB_TITLE": "roles, positions, titles, professions",
-    "LAW": "laws, regulations, acts, legal provisions",
-    "LANGUAGE": "programming languages, natural languages",
-    "NATIONALITY": "nationalities, ethnic groups",
-    "IDENTIFIER": "IDs, codes, URLs, emails, phone numbers",
-    "FILE": "filenames, extensions, file paths",
-    "MATERIAL": "chemical elements, materials, substances",
+# GLiNER2 schema entity descriptions — keys are lowercase labels for the model,
+# values are rich descriptions that significantly improve extraction accuracy.
+_GLINER_SCHEMA: dict[str, str] = {
+    "person": "People, fictional characters, named individuals",
+    "organization": "Companies, agencies, institutions, teams",
+    "location": "Cities, countries, continents, geographical features",
+    "facility": "Buildings, airports, highways, infrastructure, venues",
+    "event": "Named events, conferences, wars, disasters, meetings",
+    "date": "Calendar dates, date expressions, date ranges",
+    "time": "Time expressions, durations, time periods",
+    "money": "Monetary values with currency",
+    "quantity": "Measurements, counts, percentages, ratios",
+    "product": "Products, models, versions, brands",
+    "work_of_art": "Books, songs, paintings, films, articles",
+    "concept": "Abstract ideas, theories, methodologies, principles",
+    "technology": "Software, hardware, protocols, standards, frameworks",
+    "job_title": "Roles, positions, titles, professions",
+    "law": "Laws, regulations, acts, legal provisions, standards",
+    "language": "Programming languages or natural languages",
+    "nationality": "Nationalities, ethnic groups, demographic groups",
+    "identifier": "IDs, codes, URLs, emails, phone numbers, ISBNs",
+    "file": "Filenames, extensions, file paths",
+    "material": "Chemical elements, materials, substances, compounds",
 }
+
+# Reverse mapping: lowercase label → UPPER_CASE entity type
+_LABEL_TO_TYPE: dict[str, str] = {k: k.upper() for k in _GLINER_SCHEMA}
 
 _LLM_REVIEW_PROMPT = """\
 You are an entity extraction reviewer. GLiNER2 (a named entity recognition model) \
@@ -281,11 +285,14 @@ def _deduplicate_gliner_spans(entities: list[dict]) -> list[dict]:
 def extract_entities_gliner(
     text: str,
     model_name: str = "fastino/gliner2-large-v1",
-    confidence_threshold: float = 0.5,
+    confidence_threshold: float = 0.7,
     max_words: int = 512,
     overlap_sentences: int = 2,
 ) -> tuple[list[ExtractedEntity], list[str]]:
-    """Extract entities from text using GLiNER2 with sentence-aware chunking.
+    """Extract entities from text using GLiNER2 schema-based extraction.
+
+    Uses create_schema().entities({...}) with rich descriptions per entity
+    type for significantly better accuracy than flat label lists.
 
     Returns:
         Tuple of (entities, chunks) — chunks are returned so the LLM reviewer
@@ -294,24 +301,26 @@ def extract_entities_gliner(
     model = _get_gliner_model(model_name)
     chunks = _chunk_by_sentences(text, max_words, overlap_sentences)
 
+    # Build schema with descriptions for better accuracy
+    schema = model.create_schema().entities(_GLINER_SCHEMA)
+
     all_entities: list[ExtractedEntity] = []
-    label_to_type = {v: k for k, v in _GLINER_LABELS.items()}
 
     for chunk_idx, chunk in enumerate(chunks):
         try:
-            results = model.extract_entities(
+            results = model.extract(
                 chunk,
-                list(_GLINER_LABELS.values()),
+                schema,
+                threshold=confidence_threshold,
                 include_confidence=True,
                 include_spans=True,
-                threshold=confidence_threshold,
             )
             # GLiNER2 returns {"entities": {"label": [{"text": ..., "confidence": ...}]}}
             entities_dict = results.get("entities", results) if isinstance(results, dict) else results
             for label, ent_list in entities_dict.items():
                 if not isinstance(ent_list, list):
                     continue
-                etype = label_to_type.get(label, label.upper())
+                etype = _LABEL_TO_TYPE.get(label, label.upper())
                 for ent in ent_list:
                     if not isinstance(ent, dict):
                         continue
@@ -528,7 +537,7 @@ async def extract_entities(
     model: str,
     doc_name: str = "",
     gliner_model: str = "fastino/gliner2-large-v1",
-    confidence_threshold: float = 0.5,
+    confidence_threshold: float = 0.7,
     *,
     base_url: str | None = None,
 ) -> list[MergedEntity]:

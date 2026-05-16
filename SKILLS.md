@@ -377,7 +377,7 @@ model: gpt-5.4-mini              # LLM model (any LiteLLM provider)
 language: en                      # Wiki output language
 pageindex_threshold: 20           # PDF pages threshold for PageIndex
 entity_extraction: true           # Enable entity extraction (GLiNER2 + LLM review)
-entity_confidence_threshold: 0.5  # GLiNER2 confidence threshold
+entity_confidence_threshold: 0.7  # GLiNER2 confidence threshold (0.0-1.0)
 entity_gliner_model: fastino/gliner2-large-v1  # GLiNER2 model
 entity_llm_model: ""             # LLM for review (empty = use main model)
 ```
@@ -443,17 +443,20 @@ Wiki is plain `.md` files with `[[wikilinks]]`. Open `wiki/` as an Obsidian vaul
 
 ## Entity Extraction
 
-GLiNER2 (local NER model) as primary extractor, LLM as reviewer. Merged and deduplicated.
+GLiNER2 (local NER model) as primary extractor using **schema-based extraction with rich descriptions** per entity type for high accuracy. LLM as reviewer. Merged and deduplicated.
 
-**20 entity types**: PERSON, ORGANIZATION, LOCATION, FACILITY, EVENT, DATE, TIME, MONEY, QUANTITY, PRODUCT, WORK_OF_ART, CONCEPT, TECHNOLOGY, JOB_TITLE, LAW, LANGUAGE, NATIONALITY, IDENTIFIER, FILE, MATERIAL
+**20 entity types** (each with a descriptive schema for better accuracy): PERSON, ORGANIZATION, LOCATION, FACILITY, EVENT, DATE, TIME, MONEY, QUANTITY, PRODUCT, WORK_OF_ART, CONCEPT, TECHNOLOGY, JOB_TITLE, LAW, LANGUAGE, NATIONALITY, IDENTIFIER, FILE, MATERIAL
 
 **How it works**:
 1. Text split into sentence-aware chunks (no mid-sentence breaks)
-2. GLiNER2 extracts entities per chunk (CPU/GPU auto-detect, CPU fallback)
-3. LLM reviews GLiNER2 output with chunk context — corrects types, merges duplicates, adds missing entities
-4. Results merged by normalized name — aliases tracked, highest confidence kept
-5. Entity pages written to `wiki/entities/` with type, aliases, sources, mentions
-6. Bidirectional backlinks: summary ↔ entities, entities ↔ concepts
+2. GLiNER2 `create_schema().entities({...})` builds a schema with descriptions per entity type — descriptions significantly improve extraction accuracy
+3. `model.extract(chunk, schema, threshold=0.7)` extracts entities with confidence scores and character spans
+4. LLM reviews GLiNER2 output with chunk context — corrects types, merges duplicates, adds missing entities
+5. Results merged by normalized name — aliases tracked, highest confidence kept
+6. Entity pages written to `wiki/entities/` with type, aliases, sources, mentions
+7. Bidirectional backlinks: summary ↔ entities, entities ↔ concepts
+
+**Schema approach** (vs flat labels): Each entity type has a rich description that tells GLiNER2 what to look for. For example, `"technology": "Software, hardware, protocols, standards, frameworks"` guides the model far better than just `"technology"`. Default confidence threshold: 0.7.
 
 **Entity page format** (`wiki/entities/tim-cook.md`):
 ```yaml

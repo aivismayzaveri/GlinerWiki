@@ -11,7 +11,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "language": "en",
     "pageindex_threshold": 20,
     "entity_extraction": True,
-    "entity_confidence_threshold": 0.5,
+    "entity_confidence_threshold": 0.7,
     "entity_gliner_model": "fastino/gliner2-large-v1",
     "entity_llm_model": "",  # Empty = use main model; set to cheaper model like "gpt-4.1-nano"
 }
