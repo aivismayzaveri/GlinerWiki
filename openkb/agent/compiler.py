@@ -271,7 +271,19 @@ def _llm_call(model: str, messages: list[dict], step_name: str, **kwargs) -> str
     t0 = time.time()
 
     response = litellm.completion(model=model, messages=messages, **kwargs)
-    content = response.choices[0].message.content or ""
+    msg = response.choices[0].message
+    content = msg.content or ""
+
+    # Fallback: some proxies return content in reasoning_content or refusal
+    if not content:
+        for attr in ("reasoning_content", "refusal"):
+            alt = getattr(msg, attr, None)
+            if alt:
+                logger.info("LLM [%s] returned empty content but %s has %d chars", step_name, attr, len(alt))
+                content = alt
+                break
+        if not content:
+            logger.warning("LLM [%s] returned empty content (usage: %s)", step_name, response.usage)
 
     spinner.stop(_format_usage(time.time() - t0, response.usage))
     logger.debug("LLM response [%s]:\n%s", step_name, content[:500] + ("..." if len(content) > 500 else ""))
@@ -287,7 +299,19 @@ async def _llm_call_async(model: str, messages: list[dict], step_name: str, **kw
     t0 = time.time()
 
     response = await litellm.acompletion(model=model, messages=messages, **kwargs)
-    content = response.choices[0].message.content or ""
+    msg = response.choices[0].message
+    content = msg.content or ""
+
+    # Fallback: some proxies return content in reasoning_content or refusal
+    if not content:
+        for attr in ("reasoning_content", "refusal"):
+            alt = getattr(msg, attr, None)
+            if alt:
+                logger.info("LLM [%s] returned empty content but %s has %d chars", step_name, attr, len(alt))
+                content = alt
+                break
+        if not content:
+            logger.warning("LLM [%s] returned empty content (usage: %s)", step_name, response.usage)
 
     elapsed = time.time() - t0
     sys.stdout.write(f"    {step_name}... {_format_usage(elapsed, response.usage)}\n")
@@ -669,7 +693,7 @@ async def _compile_concepts(
             concept_briefs=concept_briefs,
             entities_context=entities_context,
         )},
-    ], "concepts-plan", max_tokens=1024)
+    ], "concepts-plan", max_tokens=2048)
 
     def _write_v1_summary_stripped() -> None:
         """Fallback writer for the v1 summary on early-return paths.

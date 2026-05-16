@@ -421,7 +421,18 @@ def review_entities_llm(
                 messages=[{"role": "user", "content": prompt}],
                 **completion_kwargs,
             )
-            raw = (response.choices[0].message.content or "").strip()
+            msg = response.choices[0].message
+            raw = (msg.content or "").strip()
+            # Fallback: some proxies return content in reasoning_content
+            if not raw:
+                for attr in ("reasoning_content", "refusal"):
+                    alt = getattr(msg, attr, None)
+                    if alt:
+                        logger.info("Entity review: empty content but %s has %d chars", attr, len(alt))
+                        raw = alt.strip()
+                        break
+            if not raw:
+                logger.warning("Entity review returned empty content for chunk %d (usage: %s)", chunk_idx, response.usage)
         except Exception as exc:
             logger.warning("LLM entity review failed for chunk %d: %s", chunk_idx, exc)
             # Keep original GLiNER2 entities on failure
