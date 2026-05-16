@@ -448,10 +448,10 @@ GLiNER2 (local NER model) as primary extractor using **schema-based extraction w
 **20 entity types** (each with a descriptive schema for better accuracy): PERSON, ORGANIZATION, LOCATION, FACILITY, EVENT, DATE, TIME, MONEY, QUANTITY, PRODUCT, WORK_OF_ART, CONCEPT, TECHNOLOGY, JOB_TITLE, LAW, LANGUAGE, NATIONALITY, IDENTIFIER, FILE, MATERIAL
 
 **How it works**:
-1. Text split into sentence-aware chunks (no mid-sentence breaks)
+1. Text split into sentence-aware chunks (1024 words max, 2-sentence overlap)
 2. GLiNER2 `create_schema().entities({...})` builds a schema with descriptions per entity type — descriptions significantly improve extraction accuracy
 3. `model.extract(chunk, schema, threshold=0.7)` extracts entities with confidence scores and character spans
-4. LLM reviews GLiNER2 output with chunk context — corrects types, merges duplicates, adds missing entities
+4. **Single LLM review call** — ALL GLiNER2 entities + full document text sent in one batch call. LLM corrects types, merges duplicates, adds descriptions, adds missing entities. Retries once on empty response.
 5. Results merged by normalized name — aliases tracked, highest confidence kept
 6. Entity pages written to `wiki/entities/` with type, aliases, sources, mentions
 7. Bidirectional backlinks: summary ↔ entities, entities ↔ concepts
