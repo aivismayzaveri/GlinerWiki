@@ -586,6 +586,8 @@ doc_type: short                    # or "pageindex"
 full_text: sources/paper.md        # path to source content
 ---
 # Summary content with [[wikilinks]] to concepts
+
+**Source:** [[sources/paper]]
 ```
 
 **Concept pages** (`concepts/`):
