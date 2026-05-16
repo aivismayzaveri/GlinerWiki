@@ -4,9 +4,9 @@
   <img src="https://docs.pageindex.ai/images/openkb.png" alt="OpenKB (by PageIndex)" />
 </a>
 
-# OpenKB — Open LLM Knowledge Base
+# OpenKB (GlinerWiki Fork) — Open LLM Knowledge Base
 
-<p align="center"><i>Scale to long documents&nbsp; • &nbsp;Reasoning-based retrieval&nbsp; • &nbsp;Native multi-modality&nbsp; • &nbsp;No Vector DB</i></p>
+<p align="center"><i>Scale to long documents&nbsp; • &nbsp;Reasoning-based retrieval&nbsp; • &nbsp;Native multi-modality&nbsp; • &nbsp;No Vector DB&nbsp; • &nbsp;GLiNER2 Entity Extraction</i></p>
 
 </div>
 
@@ -14,7 +14,9 @@
 
 # 📑 What is OpenKB
 
-**OpenKB (Open Knowledge Base)** is an open-source system (in CLI) that compiles raw documents into a structured, interlinked wiki-style knowledge base using LLMs, powered by [**PageIndex**](https://github.com/VectifyAI/PageIndex) for vectorless long document retrieval.
+**OpenKB (Open Knowledge Base)** is an open-source CLI system that compiles raw documents into a structured, interlinked wiki-style knowledge base using LLMs, powered by [**PageIndex**](https://github.com/VectifyAI/PageIndex) for vectorless long document retrieval.
+
+This **GlinerWiki fork** extends the original [OpenKB](https://github.com/VectifyAI/OpenKB) with enhanced entity extraction (GLiNER2 + LLM dual pipeline), a unified docling-based converter, structured wiki utilities, comprehensive linting, and an AI agent skills reference.
 
 The idea is based on a [concept](https://x.com/karpathy/status/2039805659525644595) described by Andrej Karpathy: LLMs generate summaries, concept pages, and cross-references, all maintained automatically. Knowledge compounds over time instead of being re-derived on every query.
 
@@ -24,17 +26,18 @@ Traditional RAG rediscovers knowledge from scratch on every query. Nothing accum
 
 ### Features
 
-- **Broad format support** — PDF, Word, Markdown, PowerPoint, HTML, Excel, text, images, and more via docling
+- **Broad format support** — PDF, Word, Markdown, PowerPoint, HTML, Excel, text, images, and more via a unified [docling](https://github.com/docling-project/docling) converter
 - **Scale to long documents** — Long and complex documents are handled via [PageIndex](https://github.com/VectifyAI/PageIndex) tree indexing, enabling accurate, vectorless long-context retrieval
 - **Native multi-modality** — Retrieves and understands figures, tables, and images, not just text. Images are described automatically via SmolVLM vision model
 - **Compiled Wiki** — LLM manages and compiles your documents into summaries, concept pages, and cross-links, all kept in sync
-- **Entity Extraction** — Dual extraction (GLiNER2 + LLM) identifies people, organizations, technologies, and 17 more entity types, with deduplication and cross-references
+- **Entity Extraction (GLiNER2 + LLM)** — Dual extraction pipeline: GLiNER2 identifies 20 entity types (people, orgs, technologies, concepts, etc.) at the sentence level, then LLM reviews, corrects, and enriches with context-aware deduplication. Entities get their own wiki pages with bidirectional backlinks
 - **Query** — Ask questions (one-off) against your wiki. The LLM navigates your compiled knowledge to answer
 - **Interactive Chat** — Multi-turn conversations with persisted sessions you can resume across runs
-- **Lint** — Health checks find contradictions, gaps, orphans, and stale content
+- **Enhanced Lint** — Structural + semantic health checks: broken wikilinks, orphaned pages, missing entries, index sync, contradictions, gaps, and stale content
 - **Watch mode** — Drop files into `raw/`, wiki updates automatically
 - **Wiki version control** — Every compile auto-snapshots the wiki via [jj](https://github.com/jj-vcs/jj). Browse history, diff revisions, restore files — no manual commits
 - **Obsidian compatible** — Wiki is plain `.md` files with `[[wikilinks]]`. Open in Obsidian for graph view and browsing
+- **AI Agent Skills Reference** — `SKILLS.md` provides a complete command and architecture reference for AI agents working with OpenKB
 
 # 🚀 Getting Started
 
@@ -50,14 +53,14 @@ pip install openkb
 - **Latest from GitHub:**
 
   ```bash
-  pip install git+https://github.com/VectifyAI/OpenKB.git
+  pip install git+https://github.com/aivismayzaveri/GlinerWiki.git
   ```
 
 - **Install from source** (editable, for development):
 
   ```bash
-  git clone https://github.com/VectifyAI/OpenKB.git
-  cd OpenKB
+  git clone https://github.com/aivismayzaveri/GlinerWiki.git
+  cd GlinerWiki
   pip install -e .
   ```
 
@@ -117,7 +120,7 @@ wiki/
  ├── sources/            Full-text conversions
  ├── summaries/          Per-document summaries
  ├── concepts/           Cross-document synthesis ← the good stuff
- ├── entities/           Named entities (people, orgs, technologies, etc.)
+ ├── entities/           Named entities (people, orgs, technologies, etc.) — auto-generated wiki pages with backlinks
  ├── explorations/       Saved query results
  └── reports/            Lint reports
 ```
@@ -264,6 +267,20 @@ jj restore concepts/attention.md --from @---  # Restore to earlier state
 
 # 🧭 Learn More
 
+### GlinerWiki Fork — What's Added
+
+This fork extends upstream OpenKB with:
+
+| Module | Description |
+|---|---|
+| `entity_extractor.py` | Dual NER pipeline: GLiNER2 (20 entity types, CPU/GPU auto-detect) + LLM reviewer for correction, merging, and enrichment |
+| `entity_writer.py` | Creates/updates entity wiki pages in `wiki/entities/`, maintains entity index by type, adds bidirectional backlinks |
+| `docling_converter.py` | Unified document converter via docling — replaces markitdown + pymupdf with a single pipeline supporting PDF, DOCX, PPTX, HTML, and more |
+| `wiki_utils.py` | Shared Markdown section-manipulation utilities (H2 section bounds, insert entries, ensure sections) used by compiler and entity writer |
+| `jj.py` | Jujutsu (jj) version control integration for automatic wiki snapshots |
+| `lint.py` | Enhanced structural linting: broken wikilinks (with fuzzy normalization), orphaned pages, missing entries, index sync checks |
+| `SKILLS.md` | AI agent skills reference — complete command and architecture docs for agents working with OpenKB |
+
 ### Compared to Karpathy's Approach
 
 | | Karpathy's workflow | OpenKB |
@@ -278,6 +295,7 @@ jj restore concepts/attention.md --from @---  # Restore to earlier state
 
 - [PageIndex](https://github.com/VectifyAI/PageIndex) — Vectorless, reasoning-based document indexing and retrieval
 - [Docling](https://github.com/docling-project/docling) — Universal document-to-markdown conversion with built-in image description via SmolVLM vision model
+- [GLiNER2](https://github.com/urchade/GLiNER) — Generalist NER model for entity extraction (20 entity types, CPU/GPU auto-detect)
 - [OpenAI Agents SDK](https://github.com/openai/openai-agents-python) — Agent framework (supports non-OpenAI models via LiteLLM)
 - [LiteLLM](https://github.com/BerriAI/litellm) — Multi-provider LLM gateway
 - [Click](https://click.palletsprojects.com/) — CLI framework
@@ -294,7 +312,7 @@ jj restore concepts/attention.md --from @---  # Restore to earlier state
 
 ### Contributing
 
-Contributions are welcome! Please submit a pull request, or open an [issue](https://github.com/VectifyAI/OpenKB/issues) for bugs or feature requests. For larger changes, consider opening an issue first to discuss the approach.
+Contributions are welcome! Please submit a pull request, or open an [issue](https://github.com/aivismayzaveri/GlinerWiki/issues) for bugs or feature requests. For larger changes, consider opening an issue first to discuss the approach.
 
 ### License
 
