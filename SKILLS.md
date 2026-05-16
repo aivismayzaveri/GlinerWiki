@@ -384,6 +384,8 @@ entity_llm_model: ""             # LLM for review (empty = use main model)
 
 **Model format**: `provider/model` LiteLLM format. OpenAI models can omit prefix.
 
+**Env var overrides**: `LLM_MODEL` overrides `model`, `ENTITY_LLM_MODEL` overrides `entity_llm_model`. These take priority over config.yaml on every command.
+
 | Provider | Example |
 |----------|---------|
 | OpenAI | `gpt-5.4` |
@@ -398,7 +400,7 @@ entity_llm_model: ""             # LLM for review (empty = use main model)
 
 | Variable | Purpose |
 |----------|---------|
-| `LLM_MODEL` | Default model — skips model prompt during `openkb init` if set |
+| `LLM_MODEL` | Live override for model — overrides config.yaml on every command |
 | `LLM_API_KEY` | Primary API key — propagated to provider-specific vars automatically |
 | `OPENAI_API_KEY` | Direct OpenAI key (alternative to LLM_API_KEY) |
 | `ANTHROPIC_API_KEY` | Direct Anthropic key |

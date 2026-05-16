@@ -92,14 +92,14 @@ OpenKB comes with [multi-LLM support](https://docs.litellm.ai/docs/providers) (e
 
 Set your model during `openkb init`, or in [`.openkb/config.yaml`](#configuration), using `provider/model` LiteLLM format (like `anthropic/claude-sonnet-4-6`). OpenAI models can omit the prefix (like `gpt-5.4`).
 
-Create a `.env` file with your LLM API key:
+Copy `.env.example` to `.env` and fill in your values:
 
 ```bash
-LLM_MODEL=anthropic/claude-sonnet-4-6   # optional — skips model prompt during init
-LLM_API_KEY=your_llm_api_key
+cp .env.example .env
+# Edit .env — set LLM_MODEL and LLM_API_KEY
 ```
 
-If `LLM_MODEL` is set, `openkb init` uses it automatically without prompting. If unset, init prompts interactively.
+`LLM_MODEL` is a **live override** — it takes priority over `config.yaml` on every command (`add`, `query`, `chat`, etc.), not just during `init`. Same for `ENTITY_LLM_MODEL`.
 
 ### Independent Entity Extraction Provider
 
@@ -232,7 +232,7 @@ entity_confidence_threshold: 0.5 # GLiNER2 confidence cutoff
 
 | Variable | Purpose |
 |---|---|
-| `LLM_MODEL` | Default model for `openkb init` (skips model prompt if set) |
+| `LLM_MODEL` | Live override for model (overrides config.yaml on every command) |
 | `LLM_API_KEY` | Universal API key (propagated to all providers) |
 | `OPENAI_API_KEY` | OpenAI-specific key |
 | `ANTHROPIC_API_KEY` | Anthropic-specific key |

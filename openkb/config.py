@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -23,12 +24,26 @@ def load_config(config_path: Path) -> dict[str, Any]:
     """Load YAML config from config_path, merged with DEFAULT_CONFIG.
 
     If the file does not exist, returns a copy of the defaults.
+
+    Environment variable overrides (take priority over config.yaml):
+    - LLM_MODEL: overrides 'model'
+    - ENTITY_LLM_MODEL: overrides 'entity_llm_model'
     """
     config = dict(DEFAULT_CONFIG)
     if config_path.exists():
         with config_path.open("r", encoding="utf-8") as fh:
             data = yaml.safe_load(fh) or {}
         config.update(data)
+
+    # Env var overrides
+    env_model = os.environ.get("LLM_MODEL", "").strip()
+    if env_model:
+        config["model"] = env_model
+
+    env_entity_model = os.environ.get("ENTITY_LLM_MODEL", "").strip()
+    if env_entity_model:
+        config["entity_llm_model"] = env_entity_model
+
     return config
 
 
