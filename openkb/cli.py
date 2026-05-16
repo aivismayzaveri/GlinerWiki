@@ -138,7 +138,12 @@ def add_single_file(file_path: Path, kb_dir: Path) -> None:
     model: str = config.get("model", DEFAULT_CONFIG["model"])
     registry = HashRegistry(openkb_dir / "hashes.json")
 
-    # 2. Convert document
+    # 2. Convert document — always reprocess on explicit add (user intent)
+    file_hash = HashRegistry.hash_file(file_path)
+    if registry.is_known(file_hash):
+        logger.info("Explicit add: removing existing hash for %s", file_path.name)
+        registry.remove(file_hash)
+
     click.echo(f"Adding: {file_path.name}")
     try:
         result = convert_document(file_path, kb_dir)
