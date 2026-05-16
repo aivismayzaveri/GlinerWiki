@@ -989,7 +989,7 @@ async def compile_short_doc(
     if entity_enabled:
         try:
             gliner_model = config.get("entity_gliner_model", "fastino/gliner2-large-v1")
-            confidence = config.get("entity_confidence_threshold", 0.5)
+            confidence = config.get("entity_confidence_threshold", 0.7)
             entity_model = os.environ.get("ENTITY_LLM_MODEL") or config.get("entity_llm_model", "") or model
             entity_base_url = os.environ.get("ENTITY_LLM_BASE_URL") or None
             entities = await extract_entities(
@@ -1055,7 +1055,7 @@ async def compile_long_doc(
     if entity_enabled:
         try:
             gliner_model = config.get("entity_gliner_model", "fastino/gliner2-large-v1")
-            confidence = config.get("entity_confidence_threshold", 0.5)
+            confidence = config.get("entity_confidence_threshold", 0.7)
             entity_model = os.environ.get("ENTITY_LLM_MODEL") or config.get("entity_llm_model", "") or model
             entity_base_url = os.environ.get("ENTITY_LLM_BASE_URL") or None
             entities = await extract_entities(
