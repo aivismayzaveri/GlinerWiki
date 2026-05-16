@@ -339,6 +339,25 @@ def init():
 
     click.echo("Knowledge base initialized.")
 
+    # Pre-download models so first `openkb add` is fast
+    click.echo("Pre-downloading models (first run only, cached after)...")
+    try:
+        click.echo("  Loading docling converter (OCR + SmolVLM)...", nl=False)
+        from openkb.docling_converter import _get_converter
+        _get_converter()
+        click.echo(" done.")
+    except Exception as exc:
+        click.echo(f" warning: {exc}")
+    try:
+        gliner_name = config.get("entity_gliner_model", DEFAULT_CONFIG["entity_gliner_model"])
+        click.echo(f"  Loading GLiNER2 model ({gliner_name})...", nl=False)
+        from openkb.entity_extractor import _get_gliner_model
+        _get_gliner_model(gliner_name)
+        click.echo(" done.")
+    except Exception as exc:
+        click.echo(f" warning: {exc}")
+    click.echo("Models cached. Ready to add documents.")
+
 
 @cli.command()
 @click.argument("path")

@@ -25,7 +25,7 @@ pip install -e .                                 # Editable (from source clone)
 ## Quick Start Commands
 
 ```bash
-openkb init                          # Create a new knowledge base (interactive)
+openkb init                          # Create a new knowledge base (interactive; pre-downloads models)
 openkb add paper.pdf                 # Add a single document
 openkb add ~/papers/                 # Add a whole directory
 openkb query "What are the findings?" # Ask a one-shot question
@@ -97,15 +97,16 @@ wiki/
 
 ### `openkb init`
 
-Initialize a new knowledge base. Interactive — prompts for LLM model and API key.
+Initialize a new knowledge base. Interactive — prompts for LLM model and API key. Pre-downloads Docling and GLiNER2 models on first run so `openkb add` is fast.
 
 ```bash
 openkb init
 # Prompts:
-#   Model (default: gpt-5.4-mini)
-#   LLM API Key (saved to .env)
+#   Model (default: gpt-5.4-mini) — skipped if LLM_MODEL env var is set
+#   LLM API Key (saved to .env) — skipped if LLM_API_KEY env var is set
 # Creates: raw/, wiki/, .openkb/, .env
 # Initializes jj version control in wiki/
+# Pre-downloads: Docling (OCR + SmolVLM), GLiNER2 NER model
 ```
 
 ### `openkb add <path>`

@@ -72,7 +72,7 @@ pip install openkb
 # 1. Create a directory for your knowledge base
 mkdir my-kb && cd my-kb
 
-# 2. Initialize the knowledge base
+# 2. Initialize the knowledge base (downloads models on first run)
 openkb init
 
 # 3. Add documents
@@ -178,7 +178,7 @@ A single source might touch 10-15 wiki pages. Knowledge accumulates: each docume
 
 | Command | Description |
 |---|---|
-| `openkb init` | Initialize a new knowledge base (interactive) |
+| `openkb init` | Initialize a new knowledge base (interactive; pre-downloads models on first run) |
 | <code>openkb&nbsp;add&nbsp;&lt;file_or_dir&gt;</code> | Add documents and compile to wiki |
 | <code>openkb&nbsp;query&nbsp;"question"</code> | Ask a question over the knowledge base (use `--save` to save the answer to `wiki/explorations/`) |
 | `openkb chat` | Start an interactive multi-turn chat (use `--resume`, `--list`, `--delete` to manage sessions) |
