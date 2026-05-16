@@ -41,6 +41,11 @@ class HashRegistry:
         self._data[file_hash] = metadata
         self._persist()
 
+    def remove(self, file_hash: str) -> None:
+        """Remove file_hash from registry and persist to disk."""
+        self._data.pop(file_hash, None)
+        self._persist()
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------

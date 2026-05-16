@@ -45,12 +45,19 @@ def convert_document(src: Path, kb_dir: Path) -> ConvertResult:
     registry = HashRegistry(openkb_dir / "hashes.json")
 
     # ------------------------------------------------------------------
-    # 1. Hash check
+    # 1. Hash check — skip only if hash is known AND wiki output is complete
     # ------------------------------------------------------------------
     file_hash = HashRegistry.hash_file(src)
     if registry.is_known(file_hash):
-        logger.info("Skipping already-known file: %s", src.name)
-        return ConvertResult(skipped=True)
+        doc_name = src.stem
+        summary_path = kb_dir / "wiki" / "summaries" / f"{doc_name}.md"
+        if summary_path.exists():
+            logger.info("Skipping already-known file: %s", src.name)
+            return ConvertResult(skipped=True)
+        else:
+            # Previous ingestion was incomplete — remove stale hash and re-process
+            logger.info("Hash known but wiki output incomplete for %s — re-processing", src.name)
+            registry.remove(file_hash)
 
     # ------------------------------------------------------------------
     # 2. Copy to raw/
