@@ -67,10 +67,7 @@ def index_long_document(pdf_path: Path, kb_dir: Path) -> IndexResult:
     description: str = doc.get("doc_description", "")
     structure: list = doc.get("structure", [])
 
-    # Debug: print doc keys and page_count to diagnose get_page_content range
-    logger.info("Doc keys: %s", list(doc.keys()))
-    logger.info("page_count from doc: %s", doc.get("page_count", "NOT PRESENT"))
-
+    
     tree = {
         "doc_name": doc_name,
         "doc_description": description,

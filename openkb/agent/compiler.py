@@ -3,10 +3,10 @@
 Pipeline leveraging LLM prompt caching:
   Step 1: Build base context A (schema + document content).
   Step 2: A → generate summary.
-  Step 3: Dual entity extraction (GLiNER2 + LLM) in parallel.
-  Step 4: A + summary + entities → concepts plan (create/update/related).
+  Step 3: GLiNER2 extraction → LLM review → route (entities/concepts/temporal).
+  Step 4: A + summary + extracted concepts → concepts plan (create/update/related).
   Step 5: Concurrent LLM calls (A cached) → generate new + rewrite updated concepts.
-  Step 6: Code writes entity pages, adds cross-ref links, updates index.
+  Step 6: Code writes entity pages, concept pages, backlinks, temporal metadata, index.
 
 Anthropic prompt caching is enabled via ``cache_control`` markers at two
 breakpoints: end of the document message (caches system + doc across all
@@ -32,8 +32,12 @@ import litellm
 
 from openkb.lint import list_existing_wiki_targets, strip_ghost_wikilinks
 from openkb.schema import get_agents_md
-from openkb.entity_extractor import extract_entities, MergedEntity, _sanitize_entity_slug
-from openkb.entity_writer import write_entity_pages, update_entity_index, add_entity_backlinks
+from openkb.entity_extractor import extract_entities, MergedEntity, RoutedEntities, _sanitize_entity_slug
+from openkb.entity_writer import (
+    write_entity_pages, update_entity_index, add_entity_backlinks,
+    write_concept_pages, add_concept_backlinks, embed_temporal_metadata,
+    add_entity_links_to_concept_pages,
+)
 from openkb.wiki_utils import (
     ensure_h2_section,
     section_contains_link,
@@ -328,8 +332,12 @@ async def _llm_call_async(model: str, messages: list[dict], step_name: str, **kw
     return content.strip()
 
 
-def _parse_json(text: str) -> list | dict:
-    """Parse JSON from LLM response, handling fences, prose, and malformed JSON."""
+def _parse_json(text: str) -> dict:
+    """Parse JSON from LLM response, handling fences, prose, and malformed JSON.
+
+    Returns a dict. If the LLM returned a list (e.g. wrapping the object in an
+    array), extracts the first dict element. If not a dict or list, raises.
+    """
     from json_repair import repair_json
     cleaned = text.strip()
     if cleaned.startswith("```"):
@@ -338,8 +346,16 @@ def _parse_json(text: str) -> list | dict:
         if cleaned.endswith("```"):
             cleaned = cleaned[:-3]
     result = json.loads(repair_json(cleaned.strip()))
-    if not isinstance(result, (dict, list)):
-        raise ValueError(f"Expected JSON object or array, got {type(result).__name__}")
+    if isinstance(result, list):
+        # LLM wrapped the object in an array — extract first dict
+        for item in result:
+            if isinstance(item, dict):
+                result = item
+                break
+        else:
+            raise ValueError(f"LLM returned a list with no dict objects")
+    if not isinstance(result, dict):
+        raise ValueError(f"Expected JSON object, got {type(result).__name__}")
     return result
 
 
@@ -662,18 +678,23 @@ async def _compile_concepts(
     doc_brief: str = "",
     doc_type: str = "short",
     rewrite_summary: bool = False,
-    entities: list[MergedEntity] | None = None,
+    routed: RoutedEntities | None = None,
 ) -> None:
-    """Shared Steps 2-6: entity write → concepts plan → generate/update → index.
+    """Shared Steps 3-6: concept plan → generate/update → entity/concept write → index.
 
     Uses ``_CONCEPTS_PLAN_USER`` to get a plan with create/update/related
-    actions, then executes each action type accordingly. Concept bodies are
+    actions based on LLM-reviewed extracted concepts. Concept bodies are
     generated in memory, scrubbed of unresolved wikilinks, and only then
     written to disk. When ``rewrite_summary=True`` (short-doc path), the
     summary is rewritten by the LLM after concepts are finalized so its
     wikilinks reflect the actual concept pages on disk.
     """
     source_file = f"summaries/{doc_name}.md"
+
+    # Unpack routed data
+    entities = routed.entities if routed else []
+    concepts = routed.concepts if routed else []  # always empty — concepts from LLM planner, not GLiNER2
+    temporal = routed.temporal if routed else []
 
     # --- Build entity context for prompts ---
     entity_slugs: list[str] = []
@@ -971,6 +992,17 @@ async def _compile_concepts(
         update_entity_index(wiki_dir, entities)
         add_entity_backlinks(wiki_dir, doc_name, entity_slugs)
 
+    # --- Step 5b: Write GLiNER2-extracted concept pages (code only) ---
+    concept_slugs_from_gliner: list[str] = []
+    if concepts:
+        concept_slugs_from_gliner = write_concept_pages(wiki_dir, concepts, doc_name)
+        add_concept_backlinks(wiki_dir, doc_name, concept_slugs_from_gliner)
+        add_entity_links_to_concept_pages(wiki_dir, concepts)
+
+    # --- Step 5c: Embed temporal metadata (code only) ---
+    if temporal:
+        embed_temporal_metadata(wiki_dir, doc_name, temporal)
+
 
 async def compile_short_doc(
     doc_name: str,
@@ -1016,20 +1048,23 @@ async def compile_short_doc(
         doc_brief = ""
         summary = summary_raw
 
-    # --- Step 2: Entity extraction (parallel GLiNER2 + LLM) ---
-    entities = None
+    # --- Step 2: Entity extraction (GLiNER2 → LLM review → route) ---
+    routed = None
     if entity_enabled:
         try:
             gliner_model = config.get("entity_gliner_model", "fastino/gliner2-large-v1")
             confidence = config.get("entity_confidence_threshold", 0.7)
             entity_model = os.environ.get("ENTITY_LLM_MODEL") or config.get("entity_llm_model", "") or model
             entity_base_url = os.environ.get("ENTITY_LLM_BASE_URL") or None
-            entities = await extract_entities(
+            routed = await extract_entities(
                 content, entity_model, doc_name=doc_name,
                 gliner_model=gliner_model, confidence_threshold=confidence,
                 base_url=entity_base_url,
             )
-            logger.info("Extracted %d entities for %s", len(entities), doc_name)
+            logger.info(
+                "Extracted for %s: %d entities, %d concepts, %d temporal",
+                doc_name, len(routed.entities), len(routed.concepts), len(routed.temporal),
+            )
         except Exception as exc:
             logger.warning("Entity extraction failed for %s: %s", doc_name, exc)
 
@@ -1037,7 +1072,7 @@ async def compile_short_doc(
     await _compile_concepts(
         wiki_dir, kb_dir, model, system_msg, doc_msg,
         summary, doc_name, max_concurrency, doc_brief=doc_brief,
-        doc_type="short", rewrite_summary=True, entities=entities,
+        doc_type="short", rewrite_summary=True, routed=routed,
     )
 
     # Snapshot wiki changes with jj
@@ -1082,20 +1117,23 @@ async def compile_long_doc(
     # --- Step 1: Generate overview ---
     overview = _llm_call(model, [system_msg, doc_msg], "overview")
 
-    # --- Step 2: Entity extraction from summary text (GLiNER2 primary + LLM review) ---
-    entities = None
+    # --- Step 2: Entity extraction from summary text (GLiNER2 → LLM review → route) ---
+    routed = None
     if entity_enabled:
         try:
             gliner_model = config.get("entity_gliner_model", "fastino/gliner2-large-v1")
             confidence = config.get("entity_confidence_threshold", 0.7)
             entity_model = os.environ.get("ENTITY_LLM_MODEL") or config.get("entity_llm_model", "") or model
             entity_base_url = os.environ.get("ENTITY_LLM_BASE_URL") or None
-            entities = await extract_entities(
+            routed = await extract_entities(
                 summary_content, entity_model, doc_name=doc_name,
                 gliner_model=gliner_model, confidence_threshold=confidence,
                 base_url=entity_base_url,
             )
-            logger.info("Extracted %d entities for %s", len(entities), doc_name)
+            logger.info(
+                "Extracted for %s: %d entities, %d concepts, %d temporal",
+                doc_name, len(routed.entities), len(routed.concepts), len(routed.temporal),
+            )
         except Exception as exc:
             logger.warning("Entity extraction failed for %s: %s", doc_name, exc)
 
@@ -1103,7 +1141,7 @@ async def compile_long_doc(
     await _compile_concepts(
         wiki_dir, kb_dir, model, system_msg, doc_msg,
         overview, doc_name, max_concurrency, doc_brief=doc_description,
-        doc_type="pageindex", entities=entities,
+        doc_type="pageindex", routed=routed,
     )
 
     # Snapshot wiki changes with jj

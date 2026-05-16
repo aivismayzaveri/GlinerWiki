@@ -17,6 +17,15 @@ from openkb.entity_extractor import (
 )
 from openkb.wiki_utils import ensure_h2_section, insert_section_entry
 
+
+def _sanitize_concept_slug(name: str) -> str:
+    """Convert a concept name to a safe filename slug."""
+    import unicodedata
+    import re
+    s = unicodedata.normalize("NFKC", name)
+    s = re.sub(r'[^\w\-]', '-', s).strip("-")
+    return s or "unnamed-concept"
+
 logger = logging.getLogger(__name__)
 
 
@@ -101,6 +110,17 @@ def _build_entity_page(
         else:
             body = existing_body
 
+        # Add LLM-inferred related concepts
+        if entity.related_concepts:
+            lines = body.split("\n")
+            ensure_h2_section(lines, "## Related Concepts")
+            for concept_name in entity.related_concepts:
+                concept_slug = _sanitize_concept_slug(concept_name)
+                entry = f"- [[concepts/{concept_slug}]]"
+                if entry not in body:
+                    insert_section_entry(lines, "## Related Concepts", entry)
+            body = "\n".join(lines)
+
         return frontmatter + "\n" + body
 
     # New entity page
@@ -125,7 +145,12 @@ def _build_entity_page(
         body += f"- [[{source_link}]]\n"
 
     body += "\n## Related Entities\n"
+
+    # LLM-inferred related concepts
     body += "\n## Related Concepts\n"
+    for concept_name in entity.related_concepts:
+        concept_slug = _sanitize_concept_slug(concept_name)
+        body += f"- [[concepts/{concept_slug}]]\n"
 
     return frontmatter + body
 
@@ -252,60 +277,227 @@ def add_entity_backlinks(
     summary_path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def add_entity_links_to_concepts(
+def add_concept_backlinks(
     wiki_dir: Path,
-    entity_slugs: list[str],
+    doc_name: str,
+    concept_slugs: list[str],
 ) -> None:
-    """Ensure entity pages link back to related concepts (if concepts exist).
+    """Add [[concepts/X]] backlinks to the summary page.
 
-    This is a lightweight pass — it checks if any concept pages mention
-    the entity name and adds a Related Concepts link on the entity page.
+    Creates or updates a '## Related Concepts' section in the summary.
     """
-    if not entity_slugs:
+    if not concept_slugs:
         return
 
-    entities_dir = wiki_dir / "entities"
+    summary_path = wiki_dir / "summaries" / f"{doc_name}.md"
+    if not summary_path.exists():
+        return
+
+    text = summary_path.read_text(encoding="utf-8")
+    missing = [s for s in concept_slugs if f"[[concepts/{s}]]" not in text]
+    if not missing:
+        return
+
+    lines = text.split("\n")
+    ensure_h2_section(lines, "## Related Concepts")
+    for slug in reversed(missing):
+        insert_section_entry(lines, "## Related Concepts", f"- [[concepts/{slug}]]")
+    summary_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+
+
+# ---------------------------------------------------------------------------
+# Concept page writer
+# ---------------------------------------------------------------------------
+
+def _build_concept_page(
+    concept: MergedEntity,
+    doc_name: str,
+    existing_text: str = "",
+) -> str:
+    """Build or update a concept wiki page from a MergedEntity.
+
+    Concept pages live in wiki/concepts/ and link to related entities
+    and summaries.
+    """
+    source_link = f"summaries/{doc_name}"
+
+    if existing_text:
+        existing_meta, existing_body = _read_entity_frontmatter(existing_text)
+        # Merge sources
+        old_sources = set(existing_meta.get("sources", []))
+        new_sources = {f"summaries/{s}" for s in concept.sources}
+        all_sources = sorted(old_sources | new_sources)
+
+        description = concept.description or existing_meta.get("brief", "")
+
+        # Rebuild frontmatter
+        fm_lines = ["type: CONCEPT"]
+        if all_sources:
+            fm_lines.append(f"sources: [{', '.join(all_sources)}]")
+        if description:
+            fm_lines.append(f"brief: {description}")
+        frontmatter = "---\n" + "\n".join(fm_lines) + "\n---\n"
+
+        # Add mention if missing
+        body = existing_body
+        if source_link and f"[[{source_link}]]" not in body:
+            if "## Mentions" in body:
+                body = body.rstrip() + f"\n- [[{source_link}]]"
+
+        # Add LLM-inferred related entities
+        if concept.related_entities:
+            lines = body.split("\n")
+            ensure_h2_section(lines, "## Related Entities")
+            for entity_name in concept.related_entities:
+                entity_slug = _sanitize_entity_slug(entity_name)
+                entry = f"- [[entities/{entity_slug}]]"
+                if entry not in body:
+                    insert_section_entry(lines, "## Related Entities", entry)
+            body = "\n".join(lines)
+
+        return frontmatter + "\n" + body
+
+    # New concept page
+    fm_lines = ["type: CONCEPT"]
+    if concept.sources:
+        source_links = [f"summaries/{s}" for s in concept.sources]
+        fm_lines.append(f"sources: [{', '.join(source_links)}]")
+    if concept.description:
+        fm_lines.append(f"brief: {concept.description}")
+    frontmatter = "---\n" + "\n".join(fm_lines) + "\n---\n"
+
+    heading = concept.canonical_name
+    body = f"\n# {heading}\n"
+    if concept.description:
+        body += f"\n{concept.description}\n"
+
+    body += "\n## Mentions\n"
+    body += f"- [[{source_link}]]\n"
+
+    # LLM-inferred related entities
+    body += "\n## Related Entities\n"
+    for entity_name in concept.related_entities:
+        entity_slug = _sanitize_entity_slug(entity_name)
+        body += f"- [[entities/{entity_slug}]]\n"
+
+    body += "\n## Related Concepts\n"
+
+    return frontmatter + body
+
+
+def write_concept_pages(
+    wiki_dir: Path,
+    concepts: list[MergedEntity],
+    doc_name: str,
+) -> list[str]:
+    """Create or update concept pages in wiki/concepts/.
+
+    Args:
+        wiki_dir: Path to the wiki directory.
+        concepts: List of merged concepts (category == "concept") to write.
+        doc_name: Source document name for backlinks.
+
+    Returns:
+        List of concept slugs that were written.
+    """
     concepts_dir = wiki_dir / "concepts"
-    if not entities_dir.exists() or not concepts_dir.exists():
+    concepts_dir.mkdir(parents=True, exist_ok=True)
+
+    written_slugs: list[str] = []
+
+    for concept in concepts:
+        slug = _sanitize_concept_slug(concept.canonical_name)
+        path = concepts_dir / f"{slug}.md"
+
+        existing_text = ""
+        if path.exists():
+            existing_text = path.read_text(encoding="utf-8")
+
+        page_text = _build_concept_page(concept, doc_name, existing_text)
+        path.write_text(page_text, encoding="utf-8")
+        written_slugs.append(slug)
+
+    return written_slugs
+
+
+# ---------------------------------------------------------------------------
+# Temporal metadata embedding
+# ---------------------------------------------------------------------------
+
+def embed_temporal_metadata(
+    wiki_dir: Path,
+    doc_name: str,
+    temporal: list[MergedEntity],
+) -> None:
+    """Embed DATE/TIME entities as date_mentioned frontmatter in the summary page.
+
+    Does not create wiki pages for temporal entities — just adds metadata.
+    """
+    if not temporal:
         return
 
-    # Build a simple name → concept slug index
-    concept_files = list(concepts_dir.glob("*.md"))
-    concept_names: dict[str, str] = {}  # normalized_name → slug
-    for cf in concept_files:
-        concept_names[_normalize_name(cf.stem)] = cf.stem
+    summary_path = wiki_dir / "summaries" / f"{doc_name}.md"
+    if not summary_path.exists():
+        return
 
-    for slug in entity_slugs:
-        entity_path = entities_dir / f"{slug}.md"
-        if not entity_path.exists():
+    text = summary_path.read_text(encoding="utf-8")
+    dates = sorted(set(t.canonical_name for t in temporal))
+
+    if text.startswith("---"):
+        fm_end = text.find("---", 3)
+        if fm_end != -1:
+            fm_block = text[:fm_end]
+            body = text[fm_end:]
+            if "date_mentioned:" in fm_block:
+                # Already has date_mentioned — merge
+                import re
+                existing = re.search(r'date_mentioned:\s*\[([^\]]*)\]', fm_block)
+                if existing:
+                    old_dates = [d.strip().strip('"') for d in existing.group(1).split(",") if d.strip()]
+                    all_dates = sorted(set(old_dates + dates))
+                    new_line = f'date_mentioned: [{", ".join(all_dates)}]'
+                    fm_block = fm_block[:existing.start()] + new_line + fm_block[existing.end():]
+            else:
+                fm_block = fm_block.rstrip() + f"\ndate_mentioned: [{', '.join(dates)}]"
+            text = fm_block + body
+
+    summary_path.write_text(text, encoding="utf-8")
+
+
+def add_entity_links_to_concept_pages(
+    wiki_dir: Path,
+    concepts: list[MergedEntity],
+) -> None:
+    """Add [[entities/X]] links to existing concept pages based on LLM-inferred relationships.
+
+    For each concept's related_entities, ensure the concept page has a
+    ## Related Entities section with the entity links.
+    """
+    concepts_dir = wiki_dir / "concepts"
+    if not concepts_dir.exists():
+        return
+
+    for concept in concepts:
+        if not concept.related_entities:
+            continue
+        slug = _sanitize_concept_slug(concept.canonical_name)
+        path = concepts_dir / f"{slug}.md"
+        if not path.exists():
             continue
 
-        text = entity_path.read_text(encoding="utf-8")
-        meta, body = _read_entity_frontmatter(text)
+        text = path.read_text(encoding="utf-8")
+        missing = []
+        for entity_name in concept.related_entities:
+            entity_slug = _sanitize_entity_slug(entity_name)
+            if f"[[entities/{entity_slug}]]" not in text:
+                missing.append(entity_slug)
+        if not missing:
+            continue
 
-        # Check if any concept page name matches the entity name or aliases
-        entity_norm = _normalize_name(slug)
-        related_concepts: list[str] = []
-        for concept_norm, concept_slug in concept_names.items():
-            if concept_norm in entity_norm or entity_norm in concept_norm:
-                if f"[[concepts/{concept_slug}]]" not in body:
-                    related_concepts.append(concept_slug)
-
-        if related_concepts:
-            lines = body.split("\n")
-            ensure_h2_section(lines, "## Related Concepts")
-            for cs in related_concepts:
-                entry = f"- [[concepts/{cs}]]"
-                if entry not in body:
-                    insert_section_entry(lines, "## Related Concepts", entry)
-
-            # Rebuild full page
-            fm_lines = [f"type: {meta.get('type', 'CONCEPT')}"]
-            if meta.get("aliases"):
-                fm_lines.append(f"aliases: [{', '.join(meta['aliases'])}]")
-            if meta.get("sources"):
-                fm_lines.append(f"sources: [{', '.join(meta['sources'])}]")
-            if meta.get("brief"):
-                fm_lines.append(f"brief: {meta['brief']}")
-            frontmatter = "---\n" + "\n".join(fm_lines) + "\n---\n"
-            entity_path.write_text(frontmatter + "\n".join(lines), encoding="utf-8")
+        lines = text.split("\n")
+        ensure_h2_section(lines, "## Related Entities")
+        for entity_slug in reversed(missing):
+            insert_section_entry(lines, "## Related Entities", f"- [[entities/{entity_slug}]]")
+        path.write_text("\n".join(lines), encoding="utf-8")
