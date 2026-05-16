@@ -98,6 +98,23 @@ Create a `.env` file with your LLM API key:
 LLM_API_KEY=your_llm_api_key
 ```
 
+### Independent Entity Extraction Provider
+
+Entity extraction uses a dual pipeline: GLiNER2 (local, no API) for primary NER, then an LLM to review and enrich. You can run the entity LLM on a completely separate, cheaper provider to reduce costs:
+
+```bash
+# .env
+ENTITY_LLM_MODEL=openai/gpt-4.1-nano
+ENTITY_LLM_BASE_URL=https://api.openai.com/v1
+```
+
+This overrides the main model for entity extraction only. All other compilation (summaries, concepts, queries) uses the primary model. Env vars take priority over `entity_llm_model` in `config.yaml`.
+
+| Env Variable | Purpose |
+|---|---|
+| `ENTITY_LLM_MODEL` | Model for entity LLM review (LiteLLM format) |
+| `ENTITY_LLM_BASE_URL` | Custom endpoint URL (independent of main provider) |
+
 # 🧩 How OpenKB Works
 
 ### Architecture
@@ -197,7 +214,25 @@ Settings are initialized by `openkb init`, and stored in `.openkb/config.yaml`:
 model: gpt-5.4                   # LLM model (any LiteLLM-supported provider)
 language: en                     # Wiki output language
 pageindex_threshold: 20          # PDF pages threshold for PageIndex
+entity_extraction: true          # Enable GLiNER2 + LLM entity extraction
+entity_llm_model: ""             # Entity LLM model (empty = use main model)
+entity_gliner_model: "fastino/gliner2-large-v1"  # GLiNER2 model for NER
+entity_confidence_threshold: 0.5 # GLiNER2 confidence cutoff
 ```
+
+### Environment Variables
+
+| Variable | Purpose |
+|---|---|
+| `LLM_API_KEY` | Universal API key (propagated to all providers) |
+| `OPENAI_API_KEY` | OpenAI-specific key |
+| `ANTHROPIC_API_KEY` | Anthropic-specific key |
+| `GEMINI_API_KEY` | Gemini-specific key |
+| `ENTITY_LLM_MODEL` | Entity extraction model (overrides config.yaml) |
+| `ENTITY_LLM_BASE_URL` | Custom endpoint for entity LLM (independent provider) |
+| `PAGEINDEX_API_KEY` | PageIndex Cloud key (optional, for large PDFs) |
+| `OPENKB_DIR` | Override auto-detected KB directory |
+| `NO_COLOR` | Disable colored output |
 
 Model names use `provider/model` LiteLLM [format](https://docs.litellm.ai/docs/providers) (OpenAI models can omit the prefix):
 
@@ -280,6 +315,7 @@ This fork extends upstream OpenKB with:
 | `jj.py` | Jujutsu (jj) version control integration for automatic wiki snapshots |
 | `lint.py` | Enhanced structural linting: broken wikilinks (with fuzzy normalization), orphaned pages, missing entries, index sync checks |
 | `SKILLS.md` | AI agent skills reference — complete command and architecture docs for agents working with OpenKB |
+| **Independent entity provider** | `ENTITY_LLM_MODEL` + `ENTITY_LLM_BASE_URL` env vars let you run entity extraction on a separate, cheaper provider without affecting the main model |
 
 ### Compared to Karpathy's Approach
 

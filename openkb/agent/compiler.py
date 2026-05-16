@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import sys
 import threading
@@ -989,10 +990,12 @@ async def compile_short_doc(
         try:
             gliner_model = config.get("entity_gliner_model", "fastino/gliner2-large-v1")
             confidence = config.get("entity_confidence_threshold", 0.5)
-            entity_model = config.get("entity_llm_model", "") or model
+            entity_model = os.environ.get("ENTITY_LLM_MODEL") or config.get("entity_llm_model", "") or model
+            entity_base_url = os.environ.get("ENTITY_LLM_BASE_URL") or None
             entities = await extract_entities(
                 content, entity_model, doc_name=doc_name,
                 gliner_model=gliner_model, confidence_threshold=confidence,
+                base_url=entity_base_url,
             )
             logger.info("Extracted %d entities for %s", len(entities), doc_name)
         except Exception as exc:
@@ -1053,10 +1056,12 @@ async def compile_long_doc(
         try:
             gliner_model = config.get("entity_gliner_model", "fastino/gliner2-large-v1")
             confidence = config.get("entity_confidence_threshold", 0.5)
-            entity_model = config.get("entity_llm_model", "") or model
+            entity_model = os.environ.get("ENTITY_LLM_MODEL") or config.get("entity_llm_model", "") or model
+            entity_base_url = os.environ.get("ENTITY_LLM_BASE_URL") or None
             entities = await extract_entities(
                 summary_content, entity_model, doc_name=doc_name,
                 gliner_model=gliner_model, confidence_threshold=confidence,
+                base_url=entity_base_url,
             )
             logger.info("Extracted %d entities for %s", len(entities), doc_name)
         except Exception as exc:

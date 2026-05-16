@@ -16,7 +16,7 @@ OpenKB is a CLI tool that compiles raw documents (PDF, Word, Markdown, HTML, Exc
 
 ```bash
 pip install openkb                              # From PyPI
-pip install git+https://github.com/VectifyAI/OpenKB.git  # Latest from GitHub
+pip install git+https://github.com/aivismayzaveri/GlinerWiki.git  # Latest from GitHub (GlinerWiki fork)
 pip install -e .                                 # Editable (from source clone)
 ```
 
@@ -401,12 +401,17 @@ entity_llm_model: ""             # LLM for review (empty = use main model)
 | `OPENAI_API_KEY` | Direct OpenAI key (alternative to LLM_API_KEY) |
 | `ANTHROPIC_API_KEY` | Direct Anthropic key |
 | `GEMINI_API_KEY` | Direct Gemini key |
+| `ENTITY_LLM_MODEL` | Entity extraction LLM (overrides `entity_llm_model` in config.yaml) |
+| `ENTITY_LLM_BASE_URL` | Custom endpoint URL for entity LLM (independent of main provider) |
 | `PAGEINDEX_API_KEY` | Optional — enables PageIndex Cloud (OCR, faster indexing). Base PageIndex is open-source and free, uses LLM_API_KEY |
 | `OPENKB_DIR` | Override KB directory (alternative to `--kb-dir` flag) |
+| `NO_COLOR` | Disable colored output |
 
 **API key load order** (first found wins): System env → KB-local `.env` → global `~/.config/openkb/.env`
 
 **KB auto-detection**: Commands find the KB by walking up from cwd looking for `.openkb/`, then falling back to the global `default_kb` setting.
+
+**Independent entity provider**: Set `ENTITY_LLM_MODEL` and `ENTITY_LLM_BASE_URL` to run entity extraction on a separate, cheaper provider (e.g. `openai/gpt-4.1-nano` at `https://api.openai.com/v1`) without affecting the main compilation model. Env vars override config.yaml.
 
 ---
 
@@ -459,6 +464,8 @@ brief: CEO of Apple Inc.
 **Entity index** (`wiki/entities/index.md`): Grouped by type with one-line descriptions.
 
 **Long docs**: Entity extraction runs on summary text (not raw pages) to avoid duplicate explosion.
+
+**Independent provider**: Use `ENTITY_LLM_MODEL` + `ENTITY_LLM_BASE_URL` env vars to run entity LLM review on a separate, cheaper endpoint (e.g. OpenAI for entity review while using Anthropic for main compilation). Env vars override `entity_llm_model` in config.yaml.
 
 **Disable**: Set `entity_extraction: false` in `.openkb/config.yaml`.
 

@@ -357,6 +357,8 @@ def review_entities_llm(
     gliner_entities: list[ExtractedEntity],
     chunks: list[str],
     model: str,
+    *,
+    base_url: str | None = None,
 ) -> list[ExtractedEntity]:
     """Review GLiNER2-extracted entities using an LLM with chunk context.
 
@@ -364,6 +366,9 @@ def review_entities_llm(
     - The chunk text (for context)
     - GLiNER2's extracted entities from that chunk
     - Asks LLM to correct types, merge duplicates, add descriptions, add missing
+
+    Args:
+        base_url: Optional custom endpoint URL for the entity LLM.
 
     Returns reviewed entities (may include new entities the LLM found).
     """
@@ -393,10 +398,13 @@ def review_entities_llm(
         )
 
         try:
+            completion_kwargs: dict = {"max_tokens": 2048}
+            if base_url:
+                completion_kwargs["base_url"] = base_url
             response = litellm.completion(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=2048,
+                **completion_kwargs,
             )
             raw = (response.choices[0].message.content or "").strip()
         except Exception as exc:
@@ -515,6 +523,8 @@ async def extract_entities(
     doc_name: str = "",
     gliner_model: str = "fastino/gliner2-large-v1",
     confidence_threshold: float = 0.5,
+    *,
+    base_url: str | None = None,
 ) -> list[MergedEntity]:
     """Run entity extraction: GLiNER2 primary → LLM review → merge.
 
@@ -524,6 +534,7 @@ async def extract_entities(
         doc_name: Source document name for tracking.
         gliner_model: GLiNER2 model name.
         confidence_threshold: GLiNER2 confidence threshold.
+        base_url: Optional custom endpoint URL for the entity LLM.
 
     Returns:
         Deduplicated list of MergedEntity objects.
@@ -544,6 +555,7 @@ async def extract_entities(
     # Step 2: LLM review with chunk context
     reviewed_entities = await asyncio.to_thread(
         review_entities_llm, gliner_entities, chunks, model,
+        base_url=base_url,
     )
 
     logger.info(
