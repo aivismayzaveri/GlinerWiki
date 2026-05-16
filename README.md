@@ -108,7 +108,12 @@ ENTITY_LLM_MODEL=openai/gpt-4.1-nano
 ENTITY_LLM_BASE_URL=https://api.openai.com/v1
 ```
 
-This overrides the main model for entity extraction only. All other compilation (summaries, concepts, queries) uses the primary model. Env vars take priority over `entity_llm_model` in `config.yaml`.
+**Model fallback** (first non-empty wins):
+1. `ENTITY_LLM_MODEL` env var
+2. `entity_llm_model` in `config.yaml`
+3. Main `model` from `config.yaml` (default)
+
+If `ENTITY_LLM_MODEL` is not set and `entity_llm_model` is empty in config, the main model is used for entity extraction — no separate provider needed. All other compilation (summaries, concepts, queries) always uses the primary model.
 
 | Env Variable | Purpose |
 |---|---|
@@ -228,7 +233,7 @@ entity_confidence_threshold: 0.5 # GLiNER2 confidence cutoff
 | `OPENAI_API_KEY` | OpenAI-specific key |
 | `ANTHROPIC_API_KEY` | Anthropic-specific key |
 | `GEMINI_API_KEY` | Gemini-specific key |
-| `ENTITY_LLM_MODEL` | Entity extraction model (overrides config.yaml) |
+| `ENTITY_LLM_MODEL` | Entity extraction model (optional, falls back to main model if unset) |
 | `ENTITY_LLM_BASE_URL` | Custom endpoint for entity LLM (independent provider) |
 | `PAGEINDEX_API_KEY` | PageIndex Cloud key (optional, for large PDFs) |
 | `OPENKB_DIR` | Override auto-detected KB directory |

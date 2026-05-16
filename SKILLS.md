@@ -401,7 +401,7 @@ entity_llm_model: ""             # LLM for review (empty = use main model)
 | `OPENAI_API_KEY` | Direct OpenAI key (alternative to LLM_API_KEY) |
 | `ANTHROPIC_API_KEY` | Direct Anthropic key |
 | `GEMINI_API_KEY` | Direct Gemini key |
-| `ENTITY_LLM_MODEL` | Entity extraction LLM (overrides `entity_llm_model` in config.yaml) |
+| `ENTITY_LLM_MODEL` | Entity extraction LLM (optional; falls back to `entity_llm_model` in config, then main model) |
 | `ENTITY_LLM_BASE_URL` | Custom endpoint URL for entity LLM (independent of main provider) |
 | `PAGEINDEX_API_KEY` | Optional — enables PageIndex Cloud (OCR, faster indexing). Base PageIndex is open-source and free, uses LLM_API_KEY |
 | `OPENKB_DIR` | Override KB directory (alternative to `--kb-dir` flag) |
@@ -465,7 +465,7 @@ brief: CEO of Apple Inc.
 
 **Long docs**: Entity extraction runs on summary text (not raw pages) to avoid duplicate explosion.
 
-**Independent provider**: Use `ENTITY_LLM_MODEL` + `ENTITY_LLM_BASE_URL` env vars to run entity LLM review on a separate, cheaper endpoint (e.g. OpenAI for entity review while using Anthropic for main compilation). Env vars override `entity_llm_model` in config.yaml.
+**Independent provider**: Use `ENTITY_LLM_MODEL` + `ENTITY_LLM_BASE_URL` env vars to run entity LLM review on a separate, cheaper endpoint (e.g. OpenAI for entity review while using Anthropic for main compilation). Model fallback: env var → `entity_llm_model` in config.yaml → main model. If neither env var nor config is set, the main model handles entity extraction.
 
 **Disable**: Set `entity_extraction: false` in `.openkb/config.yaml`.
 
