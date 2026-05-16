@@ -286,7 +286,7 @@ def extract_entities_gliner(
     text: str,
     model_name: str = "fastino/gliner2-large-v1",
     confidence_threshold: float = 0.7,
-    max_words: int = 512,
+    max_words: int = 1024,
     overlap_sentences: int = 2,
 ) -> tuple[list[ExtractedEntity], list[str]]:
     """Extract entities from text using GLiNER2 schema-based extraction.
@@ -368,21 +368,52 @@ def _format_entities_for_review(entities: list[ExtractedEntity]) -> str:
     return json.dumps(items, indent=2)
 
 
+_LLM_REVIEW_BATCH_PROMPT = """\
+You are an entity extraction reviewer. GLiNER2 (a named entity recognition model) \
+extracted the following entities from a document. Your job is to review and improve them.
+
+## Document text:
+{doc_text}
+
+## GLiNER2 extracted entities:
+{entities_json}
+
+## Your tasks:
+1. **Correct types**: If an entity is misclassified, fix its type
+2. **Merge duplicates**: If the same entity appears multiple times with different names, merge them
+3. **Add descriptions**: Give each entity a brief description (under 100 chars)
+4. **Add aliases**: List alternative names found in the text
+5. **Add missing entities**: If GLiNER2 missed important entities in the document, add them
+
+## Valid entity types:
+{entity_types}
+
+Return a JSON array of objects with keys:
+- name: canonical name
+- type: one of the valid types above
+- description: brief description
+- aliases: list of alternative names
+
+Return ONLY valid JSON, no fences, no explanation.
+"""
+
+
 def review_entities_llm(
     gliner_entities: list[ExtractedEntity],
-    chunks: list[str],
+    doc_text: str,
     model: str,
     *,
     base_url: str | None = None,
 ) -> list[ExtractedEntity]:
-    """Review GLiNER2-extracted entities using an LLM with chunk context.
+    """Review GLiNER2-extracted entities using a single LLM call with full document context.
 
-    For each chunk that produced entities, sends the LLM:
-    - The chunk text (for context)
-    - GLiNER2's extracted entities from that chunk
-    - Asks LLM to correct types, merge duplicates, add descriptions, add missing
+    Sends ALL GLiNER2 entities + full document text in one call, so the LLM
+    can resolve cross-chunk duplicates and understand the full context.
 
     Args:
+        gliner_entities: Entities extracted by GLiNER2.
+        doc_text: Full document text for context.
+        model: LLM model name (LiteLLM format).
         base_url: Optional custom endpoint URL for the entity LLM.
 
     Returns reviewed entities (may include new entities the LLM found).
@@ -390,95 +421,89 @@ def review_entities_llm(
     if not gliner_entities:
         return []
 
-    # Group entities by chunk index
-    entities_by_chunk: dict[int, list[ExtractedEntity]] = {}
-    for ent in gliner_entities:
-        entities_by_chunk.setdefault(ent.chunk_index, []).append(ent)
-
     entity_types_str = ", ".join(ENTITY_TYPES.keys())
-    all_reviewed: list[ExtractedEntity] = []
+    entities_json = _format_entities_for_review(gliner_entities)
 
-    for chunk_idx, chunk_entities in entities_by_chunk.items():
-        chunk_text = chunks[chunk_idx] if 0 <= chunk_idx < len(chunks) else ""
-        if not chunk_text:
-            # No chunk context available, keep entities as-is
-            all_reviewed.extend(chunk_entities)
-            continue
+    # Truncate doc text if extremely long (>100K chars) to avoid token limits
+    # The LLM has 256K+ context, but we leave room for the prompt + response
+    max_doc_chars = 100_000
+    if len(doc_text) > max_doc_chars:
+        doc_text = doc_text[:max_doc_chars] + "\n\n[... document truncated ...]"
 
-        entities_json = _format_entities_for_review(chunk_entities)
-        prompt = _LLM_REVIEW_PROMPT.format(
-            chunk_text=chunk_text,
-            entities_json=entities_json,
-            entity_types=entity_types_str,
+    prompt = _LLM_REVIEW_BATCH_PROMPT.format(
+        doc_text=doc_text,
+        entities_json=entities_json,
+        entity_types=entity_types_str,
+    )
+
+    try:
+        completion_kwargs: dict = {"max_tokens": 4096}
+        if base_url:
+            completion_kwargs["base_url"] = base_url
+        logger.info("LLM entity review: sending %d entities + %d chars of text", len(gliner_entities), len(doc_text))
+        response = litellm.completion(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            **completion_kwargs,
         )
+        msg = response.choices[0].message
+        raw = (msg.content or "").strip()
+        # Fallback: some proxies return content in reasoning_content
+        if not raw:
+            for attr in ("reasoning_content", "refusal"):
+                alt = getattr(msg, attr, None)
+                if alt:
+                    logger.info("Entity review: empty content but %s has %d chars", attr, len(alt))
+                    raw = alt.strip()
+                    break
+        if not raw:
+            logger.warning("Entity review returned empty content (usage: %s)", response.usage)
+            return gliner_entities  # Fall back to GLiNER2 entities
+    except Exception as exc:
+        logger.warning("LLM entity review failed: %s", exc)
+        return gliner_entities  # Fall back to GLiNER2 entities
 
-        try:
-            completion_kwargs: dict = {"max_tokens": 2048}
-            if base_url:
-                completion_kwargs["base_url"] = base_url
-            response = litellm.completion(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                **completion_kwargs,
-            )
-            msg = response.choices[0].message
-            raw = (msg.content or "").strip()
-            # Fallback: some proxies return content in reasoning_content
-            if not raw:
-                for attr in ("reasoning_content", "refusal"):
-                    alt = getattr(msg, attr, None)
-                    if alt:
-                        logger.info("Entity review: empty content but %s has %d chars", attr, len(alt))
-                        raw = alt.strip()
-                        break
-            if not raw:
-                logger.warning("Entity review returned empty content for chunk %d (usage: %s)", chunk_idx, response.usage)
-        except Exception as exc:
-            logger.warning("LLM entity review failed for chunk %d: %s", chunk_idx, exc)
-            # Keep original GLiNER2 entities on failure
-            all_reviewed.extend(chunk_entities)
+    # Parse JSON response
+    cleaned = raw
+    if cleaned.startswith("```"):
+        first_nl = cleaned.find("\n")
+        cleaned = cleaned[first_nl + 1:] if first_nl != -1 else cleaned[3:]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+
+    try:
+        from json_repair import repair_json
+        parsed = json.loads(repair_json(cleaned.strip()))
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning("Failed to parse LLM review output: %s", exc)
+        return gliner_entities  # Fall back to GLiNER2 entities
+
+    if not isinstance(parsed, list):
+        logger.warning("LLM review returned non-array: %s", type(parsed).__name__)
+        return gliner_entities
+
+    reviewed: list[ExtractedEntity] = []
+    for item in parsed:
+        if not isinstance(item, dict):
             continue
-
-        # Parse JSON response
-        cleaned = raw
-        if cleaned.startswith("```"):
-            first_nl = cleaned.find("\n")
-            cleaned = cleaned[first_nl + 1:] if first_nl != -1 else cleaned[3:]
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-
-        try:
-            from json_repair import repair_json
-            parsed = json.loads(repair_json(cleaned.strip()))
-        except (json.JSONDecodeError, ValueError) as exc:
-            logger.warning("Failed to parse LLM review output for chunk %d: %s", chunk_idx, exc)
-            all_reviewed.extend(chunk_entities)
+        name = item.get("name", "").strip()
+        if not name:
             continue
+        etype = item.get("type", "CONCEPT").upper().strip()
+        if etype not in ENTITY_TYPES:
+            etype = "CONCEPT"
+        reviewed.append(ExtractedEntity(
+            text=name,
+            entity_type=etype,
+            confidence=1.0,
+            description=item.get("description", ""),
+            aliases=item.get("aliases", []),
+            source="llm-review",
+            chunk_index=0,
+        ))
 
-        if not isinstance(parsed, list):
-            all_reviewed.extend(chunk_entities)
-            continue
-
-        for item in parsed:
-            if not isinstance(item, dict):
-                continue
-            name = item.get("name", "").strip()
-            if not name:
-                continue
-            etype = item.get("type", "CONCEPT").upper().strip()
-            if etype not in ENTITY_TYPES:
-                etype = "CONCEPT"
-            all_reviewed.append(ExtractedEntity(
-                text=name,
-                entity_type=etype,
-                confidence=1.0,
-                description=item.get("description", ""),
-                aliases=item.get("aliases", []),
-                source="llm-review",
-                chunk_index=chunk_idx,
-            ))
-
-    return all_reviewed
+    logger.info("LLM review: %d GLiNER2 entities → %d reviewed entities", len(gliner_entities), len(reviewed))
+    return reviewed
 
 
 # ---------------------------------------------------------------------------
@@ -566,7 +591,7 @@ async def extract_entities(
         Deduplicated list of MergedEntity objects.
     """
     # Step 1: GLiNER2 primary extraction (runs in thread to avoid blocking)
-    gliner_entities, chunks = await asyncio.to_thread(
+    gliner_entities, _chunks = await asyncio.to_thread(
         extract_entities_gliner, text, gliner_model, confidence_threshold,
     )
 
@@ -578,9 +603,9 @@ async def extract_entities(
     if not gliner_entities:
         return []
 
-    # Step 2: LLM review with chunk context
+    # Step 2: LLM review — single call with full document context
     reviewed_entities = await asyncio.to_thread(
-        review_entities_llm, gliner_entities, chunks, model,
+        review_entities_llm, gliner_entities, text, model,
         base_url=base_url,
     )
 

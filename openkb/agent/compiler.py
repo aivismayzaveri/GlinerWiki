@@ -260,8 +260,22 @@ def _fmt_messages(messages: list[dict], max_content: int = 200) -> str:
     return "\n".join(parts)
 
 
+def _extract_content(response) -> str:
+    """Extract content from LLM response, handling non-standard proxy formats."""
+    msg = response.choices[0].message
+    content = msg.content or ""
+    if not content:
+        for attr in ("reasoning_content", "refusal"):
+            alt = getattr(msg, attr, None)
+            if alt:
+                logger.info("LLM returned empty content but %s has %d chars", attr, len(alt))
+                content = alt
+                break
+    return content
+
+
 def _llm_call(model: str, messages: list[dict], step_name: str, **kwargs) -> str:
-    """Single LLM call with animated progress and debug logging."""
+    """Single LLM call with animated progress and debug logging. Retries once on empty response."""
     logger.debug("LLM request [%s]:\n%s", step_name, _fmt_messages(messages))
     if kwargs:
         logger.debug("LLM kwargs [%s]: %s", step_name, kwargs)
@@ -271,19 +285,16 @@ def _llm_call(model: str, messages: list[dict], step_name: str, **kwargs) -> str
     t0 = time.time()
 
     response = litellm.completion(model=model, messages=messages, **kwargs)
-    msg = response.choices[0].message
-    content = msg.content or ""
+    content = _extract_content(response)
 
-    # Fallback: some proxies return content in reasoning_content or refusal
+    # Retry once if empty
     if not content:
-        for attr in ("reasoning_content", "refusal"):
-            alt = getattr(msg, attr, None)
-            if alt:
-                logger.info("LLM [%s] returned empty content but %s has %d chars", step_name, attr, len(alt))
-                content = alt
-                break
+        logger.warning("LLM [%s] returned empty, retrying...", step_name)
+        time.sleep(1)
+        response = litellm.completion(model=model, messages=messages, **kwargs)
+        content = _extract_content(response)
         if not content:
-            logger.warning("LLM [%s] returned empty content (usage: %s)", step_name, response.usage)
+            logger.warning("LLM [%s] returned empty on retry (usage: %s)", step_name, response.usage)
 
     spinner.stop(_format_usage(time.time() - t0, response.usage))
     logger.debug("LLM response [%s]:\n%s", step_name, content[:500] + ("..." if len(content) > 500 else ""))
@@ -291,7 +302,7 @@ def _llm_call(model: str, messages: list[dict], step_name: str, **kwargs) -> str
 
 
 async def _llm_call_async(model: str, messages: list[dict], step_name: str, **kwargs) -> str:
-    """Async LLM call with timing output and debug logging."""
+    """Async LLM call with timing output and debug logging. Retries once on empty response."""
     logger.debug("LLM request [%s]:\n%s", step_name, _fmt_messages(messages))
     if kwargs:
         logger.debug("LLM kwargs [%s]: %s", step_name, kwargs)
@@ -299,19 +310,16 @@ async def _llm_call_async(model: str, messages: list[dict], step_name: str, **kw
     t0 = time.time()
 
     response = await litellm.acompletion(model=model, messages=messages, **kwargs)
-    msg = response.choices[0].message
-    content = msg.content or ""
+    content = _extract_content(response)
 
-    # Fallback: some proxies return content in reasoning_content or refusal
+    # Retry once if empty
     if not content:
-        for attr in ("reasoning_content", "refusal"):
-            alt = getattr(msg, attr, None)
-            if alt:
-                logger.info("LLM [%s] returned empty content but %s has %d chars", step_name, attr, len(alt))
-                content = alt
-                break
+        logger.warning("LLM [%s] returned empty, retrying...", step_name)
+        await asyncio.sleep(1)
+        response = await litellm.acompletion(model=model, messages=messages, **kwargs)
+        content = _extract_content(response)
         if not content:
-            logger.warning("LLM [%s] returned empty content (usage: %s)", step_name, response.usage)
+            logger.warning("LLM [%s] returned empty on retry (usage: %s)", step_name, response.usage)
 
     elapsed = time.time() - t0
     sys.stdout.write(f"    {step_name}... {_format_usage(elapsed, response.usage)}\n")
