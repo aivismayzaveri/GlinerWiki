@@ -306,18 +306,24 @@ def extract_entities_gliner(
                 include_spans=True,
                 threshold=confidence_threshold,
             )
-            for ent in results:
-                etype_raw = ent.get("entity_type", "")
-                etype = label_to_type.get(etype_raw, etype_raw.upper())
-                text_val = ent.get("text", "").strip()
-                if text_val:
-                    all_entities.append(ExtractedEntity(
-                        text=text_val,
-                        entity_type=etype,
-                        confidence=ent.get("confidence", 0.0),
-                        source="gliner",
-                        chunk_index=chunk_idx,
-                    ))
+            # GLiNER2 returns {"entities": {"label": [{"text": ..., "confidence": ...}]}}
+            entities_dict = results.get("entities", results) if isinstance(results, dict) else results
+            for label, ent_list in entities_dict.items():
+                if not isinstance(ent_list, list):
+                    continue
+                etype = label_to_type.get(label, label.upper())
+                for ent in ent_list:
+                    if not isinstance(ent, dict):
+                        continue
+                    text_val = ent.get("text", "").strip()
+                    if text_val:
+                        all_entities.append(ExtractedEntity(
+                            text=text_val,
+                            entity_type=etype,
+                            confidence=ent.get("confidence", 0.0),
+                            source="gliner",
+                            chunk_index=chunk_idx,
+                        ))
         except Exception as exc:
             logger.warning("GLiNER2 extraction failed on chunk %d: %s", chunk_idx, exc)
 
