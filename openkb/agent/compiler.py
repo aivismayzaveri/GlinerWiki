@@ -431,6 +431,10 @@ def _write_summary(wiki_dir: Path, doc_name: str, summary: str,
         f"full_text: sources/{doc_name}.{ext}",
     ]
     frontmatter = "---\n" + "\n".join(fm_lines) + "\n---\n\n"
+    # Append source backlink
+    source_link = f"[[sources/{doc_name}]]"
+    if source_link not in summary:
+        summary = summary.rstrip("\n") + f"\n\n**Source:** {source_link}\n"
     (summaries_dir / f"{doc_name}.md").write_text(frontmatter + summary, encoding="utf-8")
 
 

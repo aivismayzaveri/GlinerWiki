@@ -43,4 +43,7 @@ def render_summary_md(tree: dict, source_name: str, doc_id: str) -> str:
     frontmatter = _yaml_frontmatter(source_name, doc_id)
     structure = tree.get("structure", [])
     body = _render_nodes_summary(structure, depth=1)
+    source_link = f"[[sources/{source_name}]]"
+    if source_link not in body:
+        body = body.rstrip("\n") + f"\n\n**Source:** {source_link}\n"
     return frontmatter + "\n" + body
