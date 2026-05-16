@@ -184,6 +184,7 @@ Run structural + semantic health checks.
 ```bash
 openkb lint                       # Run lint
 openkb lint --fix                 # Auto-fix broken wikilinks (fuzzy match)
+openkb lint --entity-dedup        # LLM-powered entity deduplication
 ```
 
 **Structural checks**:
@@ -476,6 +477,32 @@ brief: CEO of Apple Inc.
 
 **Disable**: Set `entity_extraction: false` in `.openkb/config.yaml`.
 
+### Bi-temporal Entity Validity
+
+Each entity page can have a `validity[]` block tracking when facts about the entity were true:
+
+```yaml
+validity:
+  - fact: "works at Anthropic"
+    valid_from: "2023-01"
+    valid_to: "open"
+    recorded_at: "2026-01-15"
+    source: "summaries/attention-paper"
+  - fact: "previously at Google"
+    valid_from: "2015-03"
+    valid_to: "2022-12"
+    recorded_at: "2026-01-15"
+    source: "summaries/attention-paper"
+```
+
+- **valid_from/to**: when the fact was true in the real world (partial dates OK: "2015", "Q3 2025", "early 2020s")
+- **recorded_at**: when this was first recorded in the wiki (jj transaction time)
+- **source**: which summary page this fact came from
+
+This enables temporal queries: "what changed since 2025-06-01", "what happened in 2025".
+
+The query agent auto-detects temporal keywords and calls `temporal_search` to filter entity validity blocks.
+
 ---
 
 ## Key Modules
@@ -488,6 +515,8 @@ brief: CEO of Apple Inc.
 | `indexer.py` | PageIndex integration for long PDFs |
 | `entity_extractor.py` | Dual entity extraction (GLiNER2 + LLM), merge, dedup |
 | `entity_writer.py` | Entity page writing, index maintenance, backlinks |
+| `entity_dedup.py` | LLM entity deduplication: link-graph traversal, semantic merge discovery, auto-merge with re-linking |
+| `temporal_index.py` | Bi-temporal indexer: parses `validity[]` blocks, temporal queries (get_facts_since, get_facts_in_range) |
 | `agent/compiler.py` | Core: LLM wiki compilation pipeline |
 | `agent/query.py` | Q&A agent (single-shot) |
 | `agent/chat.py` | Interactive chat REPL |

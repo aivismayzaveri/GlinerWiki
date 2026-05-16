@@ -31,9 +31,11 @@ Traditional RAG rediscovers knowledge from scratch on every query. Nothing accum
 - **Native multi-modality** — Retrieves and understands figures, tables, and images, not just text. Images are described automatically via SmolVLM vision model
 - **Compiled Wiki** — LLM manages and compiles your documents into summaries, concept pages, and cross-links, all kept in sync
 - **Entity Extraction (GLiNER2 + LLM)** — Dual extraction pipeline: GLiNER2 schema-based extraction with rich descriptions per entity type for high accuracy (20 types: people, orgs, technologies, concepts, etc.), then a single LLM review call with full document context corrects, merges, and enriches. Entities get their own wiki pages with bidirectional backlinks
+- **Bi-temporal Entity Validity** — Entity pages track `validity[]` blocks per fact (valid_from/valid_to dates + recorded_at transaction time). Temporal queries: "what changed since X", "what happened in Y"
 - **Query** — Ask questions (one-off) against your wiki. The LLM navigates your compiled knowledge to answer
 - **Interactive Chat** — Multi-turn conversations with persisted sessions you can resume across runs
 - **Enhanced Lint** — Structural + semantic health checks: broken wikilinks, orphaned pages, missing entries, index sync, contradictions, gaps, and stale content
+- **LLM Entity Deduplication** — `openkb lint --entity-dedup` uses an LLM agent to traverse entity link-graphs, find semantic duplicates (e.g., "Google" vs "Google LLC"), and auto-merge them — canonical absorbs aliases/sources, all wikilinks are re-pointed
 - **Watch mode** — Drop files into `raw/`, wiki updates automatically
 - **Wiki version control** — Every compile auto-snapshots the wiki via [jj](https://github.com/jj-vcs/jj). Browse history, diff revisions, restore files — no manual commits
 - **Obsidian compatible** — Wiki is plain `.md` files with `[[wikilinks]]`. Open in Obsidian for graph view and browsing
@@ -184,6 +186,7 @@ A single source might touch 10-15 wiki pages. Knowledge accumulates: each docume
 | `openkb chat` | Start an interactive multi-turn chat (use `--resume`, `--list`, `--delete` to manage sessions) |
 | `openkb watch` | Watch `raw/` and auto-compile new files |
 | `openkb lint` | Run structural + knowledge health checks |
+| <code>openkb&nbsp;lint&nbsp;--entity-dedup</code> | LLM-powered entity deduplication — find and auto-merge semantic duplicates |
 | `openkb list` | List indexed documents and concepts |
 | `openkb status` | Show knowledge base stats |
 | <code>openkb&nbsp;history&nbsp;[file]</code> | Show wiki version history (optionally filter by file) |
@@ -322,7 +325,9 @@ This fork extends upstream OpenKB with:
 | `docling_converter.py` | Unified document converter via docling — replaces markitdown + pymupdf with a single pipeline supporting PDF, DOCX, PPTX, HTML, and more |
 | `wiki_utils.py` | Shared Markdown section-manipulation utilities (H2 section bounds, insert entries, ensure sections) used by compiler and entity writer |
 | `jj.py` | Jujutsu (jj) version control integration for automatic wiki snapshots |
-| `lint.py` | Enhanced structural linting: broken wikilinks (with fuzzy normalization), orphaned pages, missing entries, index sync checks |
+| `lint.py` | Enhanced structural linting: broken wikilinks (with fuzzy normalization), orphaned pages, missing entries, index sync checks, **LLM entity deduplication** |
+| `temporal_index.py` | Bi-temporal indexer: parses `validity[]` blocks, answers temporal queries (facts since/in-range) |
+| `entity_dedup.py` | LLM entity deduplication agent: traverses entity link-graphs, finds semantic duplicates, auto-merges with re-linking |
 | `SKILLS.md` | AI agent skills reference — complete command and architecture docs for agents working with OpenKB |
 | **Independent entity provider** | `ENTITY_LLM_MODEL` + `ENTITY_LLM_BASE_URL` env vars let you run entity extraction on a separate, cheaper provider without affecting the main model |
 | **Explicit add always reprocesses** | `openkb add` ignores hash and always re-processes (hash-based skip only applies in `openkb watch` mode) |

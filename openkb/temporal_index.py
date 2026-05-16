@@ -151,9 +151,12 @@ def _parse_validity_block(
     if "validity:" not in text:
         return facts
 
-    # Split into lines and find the validity block
     lines = text.split("\n")
+    # Find the indent level of the first list item under validity:
+    # validity:\n  - fact: ...  → list_indent = 2 (before "- ")
+    # Then continuation lines (valid_from:, etc.) are at indent+2 or more
     in_validity = False
+    list_indent: int | None = None
     entry: dict[str, str] = {}
 
     for i, line in enumerate(lines):
@@ -161,61 +164,81 @@ def _parse_validity_block(
         if stripped == "validity:":
             in_validity = True
             continue
+
         if in_validity:
-            # End of block: unindented line
-            if entry:
-                fact = entry.get("fact", "")
-                valid_from = entry.get("valid_from", "")
-                valid_to = entry.get("valid_to", "open")
-                recorded_at = entry.get("recorded_at", "")
-                source = entry.get("source", "")
-                if fact:
-                    facts.append(EntityFact(
-                        entity_slug=entity_slug,
-                        entity_name=entity_name,
-                        entity_type=entity_type,
-                        fact=fact,
-                        valid_from=valid_from,
-                        valid_to=valid_to,
-                        recorded_at=recorded_at,
-                        source=source,
-                    ))
-                entry = {}
-            if stripped and not stripped.startswith(("- ", "  ")):
-                # End of validity block
-                in_validity = False
-                break
-            if stripped.startswith("- "):
-                # New entry
+            # Determine indent when we see the first list marker
+            if list_indent is None and stripped.startswith("- "):
+                # e.g. line = "  - fact: ..." → indent = 2
+                list_indent = len(line) - len(line.lstrip())
+                # Parse fact from combined "- fact: value" lines before continuing
+                if stripped.startswith("- fact:"):
+                    entry["fact"] = stripped[7:].strip().strip('"')
                 continue
-            if stripped.startswith("fact:"):
-                entry["fact"] = stripped[5:].strip().strip('"')
-            elif stripped.startswith("valid_from:"):
-                entry["valid_from"] = stripped[11:].strip().strip('"')
-            elif stripped.startswith("valid_to:"):
-                entry["valid_to"] = stripped[10:].strip().strip('"')
-            elif stripped.startswith("recorded_at:"):
-                entry["recorded_at"] = stripped[13:].strip().strip('"')
-            elif stripped.startswith("source:"):
-                entry["source"] = stripped[7:].strip().strip('"')
-    # Last entry
-    if entry:
-        fact = entry.get("fact", "")
-        valid_from = entry.get("valid_from", "")
-        valid_to = entry.get("valid_to", "open")
-        recorded_at = entry.get("recorded_at", "")
-        source = entry.get("source", "")
-        if fact:
-            facts.append(EntityFact(
-                entity_slug=entity_slug,
-                entity_name=entity_name,
-                entity_type=entity_type,
-                fact=fact,
-                valid_from=valid_from,
-                valid_to=valid_to,
-                recorded_at=recorded_at,
-                source=source,
-            ))
+
+            # Have we seen a list item? Now check for end of block.
+            if list_indent is not None:
+                # End of block: non-empty line at or before list_indent that isn't a list item
+                current_indent = len(line) - len(line.lstrip()) if line else 0
+                if line.strip() and current_indent <= list_indent and not stripped.startswith("- "):
+                    # End of validity block — flush final entry
+                    if entry.get("fact"):
+                        facts.append(EntityFact(
+                            entity_slug=entity_slug,
+                            entity_name=entity_name,
+                            entity_type=entity_type,
+                            fact=entry["fact"],
+                            valid_from=entry.get("valid_from", ""),
+                            valid_to=entry.get("valid_to", "open"),
+                            recorded_at=entry.get("recorded_at", ""),
+                            source=entry.get("source", ""),
+                        ))
+                    break
+
+                if stripped.startswith("- "):
+                    # New entry — flush previous
+                    if entry.get("fact"):
+                        facts.append(EntityFact(
+                            entity_slug=entity_slug,
+                            entity_name=entity_name,
+                            entity_type=entity_type,
+                            fact=entry["fact"],
+                            valid_from=entry.get("valid_from", ""),
+                            valid_to=entry.get("valid_to", "open"),
+                            recorded_at=entry.get("recorded_at", ""),
+                            source=entry.get("source", ""),
+                        ))
+                    entry = {}
+                    # Parse fact from combined "- fact: value" lines before continuing
+                    if stripped.startswith("- fact:"):
+                        entry["fact"] = stripped[7:].strip().strip('"')
+                    continue
+
+                # Field lines (valid_from:, etc.)
+                if stripped.startswith("fact:"):
+                    entry["fact"] = stripped[5:].strip().strip('"')
+                elif stripped.startswith("valid_from:"):
+                    entry["valid_from"] = stripped[11:].strip().strip('"')
+                elif stripped.startswith("valid_to:"):
+                    entry["valid_to"] = stripped[10:].strip().strip('"')
+                elif stripped.startswith("recorded_at:"):
+                    entry["recorded_at"] = stripped[13:].strip().strip('"')
+                elif stripped.startswith("source:"):
+                    entry["source"] = stripped[7:].strip().strip('"')
+
+    # Flush final entry (no more lines after validity block)
+    if entry.get("fact"):
+        facts.append(EntityFact(
+            entity_slug=entity_slug,
+            entity_name=entity_name,
+            entity_type=entity_type,
+            fact=entry["fact"],
+            valid_from=entry.get("valid_from", ""),
+            valid_to=entry.get("valid_to", "open"),
+            recorded_at=entry.get("recorded_at", ""),
+            source=entry.get("source", ""),
+        ))
+
+    return facts
 
     return facts
 
