@@ -111,7 +111,7 @@ openkb init
 
 ### `openkb add <path>`
 
-Add a document or directory of documents. Hash-checked — re-adding the same file is a no-op.
+Add a document or directory of documents. Hash-checked — re-adding the same file is a no-op unless the previous ingestion was incomplete (missing summaries, concepts, or entities), in which case it re-processes automatically.
 
 ```bash
 openkb add paper.pdf             # Single file
@@ -121,7 +121,7 @@ openkb add ~/papers/             # Directory (recursive)
 **Supported formats**: `.pdf`, `.md`, `.docx`, `.pptx`, `.xlsx`, `.html`, `.htm`, `.txt`, `.csv`, images (`.png`, `.jpg`, `.tiff`, `.bmp`, `.webp`), audio, video, and more
 
 **What happens internally**:
-1. SHA-256 hash check — skip if already known
+1. SHA-256 hash check — skip if already known AND wiki output is complete (summary exists); re-ingest if incomplete
 2. Copy original to `raw/`
 3. If PDF >= 20 pages → PageIndex tree indexing (long doc path)
 4. Otherwise → docling conversion (short doc path)

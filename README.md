@@ -325,6 +325,7 @@ This fork extends upstream OpenKB with:
 | `lint.py` | Enhanced structural linting: broken wikilinks (with fuzzy normalization), orphaned pages, missing entries, index sync checks |
 | `SKILLS.md` | AI agent skills reference — complete command and architecture docs for agents working with OpenKB |
 | **Independent entity provider** | `ENTITY_LLM_MODEL` + `ENTITY_LLM_BASE_URL` env vars let you run entity extraction on a separate, cheaper provider without affecting the main model |
+| **Re-ingestion on incomplete output** | If a previous `openkb add` failed mid-way (missing summaries/concepts/entities), re-adding the same file automatically re-processes it instead of skipping |
 
 ### Compared to Karpathy's Approach
 
