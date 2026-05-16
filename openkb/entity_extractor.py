@@ -133,6 +133,9 @@ class ExtractedEntity:
     temporal_ref: str = ""  # for DATE/TIME: what event it refers to
     related_concepts: list[str] = field(default_factory=list)  # for entities
     related_entities: list[str] = field(default_factory=list)  # for concepts
+    fact_text: str = ""  # for DATE/TIME: natural-language fact this date grounds
+    valid_from: str = ""  # for DATE/TIME: start date or date value
+    valid_to: str = "open"  # for DATE/TIME: "open" or end date (e.g. "joined Google in 2015")
 
 
 @dataclass
@@ -148,6 +151,11 @@ class MergedEntity:
     temporal_ref: str = ""  # for DATE/TIME: what event it refers to
     related_concepts: list[str] = field(default_factory=list)  # for entities
     related_entities: list[str] = field(default_factory=list)  # for concepts
+    fact_text: str = ""  # for DATE/TIME: natural-language fact this date grounds
+    valid_from: str = ""  # for DATE/TIME: start date or date value
+    valid_to: str = "open"  # for DATE/TIME: "open" or end date
+    valid_from: str = ""  # for DATE/TIME: start date or date value
+    valid_to: str = "open"  # for DATE/TIME: "open" or end date
 
 
 # ---------------------------------------------------------------------------
@@ -413,12 +421,21 @@ document. Your job is to review, correct, merge, and enrich them.
 ## Relationship inference:
 - For entities: set `related_concepts` to any abstract concept names this entity relates to (for wiki cross-linking to concept pages created by the LLM concept planner)
 
+## Temporal entities (DATE, TIME):
+For DATE or TIME entities, ALSO extract:
+- `fact`: The natural-language fact this date anchors. E.g. if the text says "Tim Cook joined Google in 2015" and the DATE entity is "2015", the fact is "joined Google". If the text says "the pandemic began in 2020" and DATE is "2020", fact is "pandemic began".
+- `valid_from`: The date value itself (e.g. "2015", "Q3 2025", "early 2020s", "Monday"). Use the raw entity text.
+- `valid_to`: "open" if this fact is still true, otherwise the end date if stated (e.g. "2019" for "left in 2019").
+
 Return a JSON array of objects with keys:
 - name: canonical name (use the most complete/standard form)
 - type: one of the valid types above
 - description: brief contextual description
 - aliases: list of alternative names/abbreviations
 - related_concepts: list of concept names this entity relates to (for cross-linking)
+- fact: (DATE/TIME only) the natural-language fact this date anchors
+- valid_from: (DATE/TIME only) the date value itself (e.g. "2015", "Q3 2025")
+- valid_to: (DATE/TIME only) "open" if still true, or an end date if stated
 
 Return ONLY valid JSON, no fences, no explanation.
 """
@@ -530,6 +547,7 @@ def review_entities_llm(
             category=category,
             temporal_ref=item.get("temporal_ref", "") or "",
             related_concepts=item.get("related_concepts", []) or [],
+            fact_text=item.get("fact", "") or "",
         ))
 
     logger.info("LLM review: %d GLiNER2 entities → %d reviewed entities", len(gliner_entities), len(reviewed))
@@ -581,6 +599,19 @@ def merge_entities(
             temporal_ref = ""
             related_concepts = []
 
+        # Merge fact_text / valid_from / valid_to for temporal entities
+        fact_text = ""
+        valid_from = ""
+        valid_to = "open"
+        if reviewed:
+            for e in reviewed:
+                if e.fact_text:
+                    # Prefer LLM fact_text for temporal entities
+                    fact_text = e.fact_text
+                    valid_from = e.valid_from or e.text
+                    valid_to = e.valid_to or "open"
+                    break
+
         # Collect all aliases (excluding canonical)
         all_names: set[str] = set()
         for e in group:
@@ -601,6 +632,9 @@ def merge_entities(
             category=category,
             temporal_ref=temporal_ref,
             related_concepts=sorted(set(related_concepts)),
+            fact_text=fact_text,
+            valid_from=valid_from,
+            valid_to=valid_to,
         ))
 
     return sorted(merged, key=lambda e: (-e.confidence, e.canonical_name))

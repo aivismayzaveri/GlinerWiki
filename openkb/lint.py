@@ -819,6 +819,53 @@ def run_entity_lint(wiki: Path) -> str:
     return "\n".join(lines)
 
 
+def lint_entity_dedup_llm(
+    wiki: Path,
+    model: str,
+    *,
+    base_url: str | None = None,
+) -> str:
+    """Run LLM-powered entity deduplication and auto-apply merges.
+
+    Returns a formatted report string.
+    """
+    from openkb.entity_dedup import EntityDedupAgent, collect_entity_graph, merge_entities_wiki
+
+    entities_dir = wiki / "entities"
+    if not entities_dir.is_dir():
+        return "### Entity Dedup\n\nNo entities directory found.\n"
+
+    lines = ["### Entity Deduplication (LLM)"]
+
+    # Collect graph
+    graph = collect_entity_graph(wiki)
+    if not graph:
+        lines.append("\nNo entities found.")
+        return "\n".join(lines)
+
+    # Ask LLM
+    agent = EntityDedupAgent(model=model, base_url=base_url)
+    groups = agent.find_merges(graph)
+
+    if not groups:
+        lines.append("\nNo duplicate entities found.")
+        return "\n".join(lines)
+
+    lines.append(f"\nProposed {len(groups)} merge group(s):")
+    for g in groups:
+        dups = ", ".join(g.duplicate_slugs) if g.duplicate_slugs else "none"
+        lines.append(f"- {g.canonical_slug} (canonical) — merge: {dups}")
+        lines.append(f"  Reason: {g.reason}")
+
+    # Auto-apply
+    result = merge_entities_wiki(wiki, groups)
+    lines.append(f"\nAuto-applied {result['merged']} merge(s) ({result['links_updated']} links updated):")
+    for desc in result["descriptions"]:
+        lines.append(f"- {desc}")
+
+    return "\n".join(lines)
+
+
 def run_structural_lint(kb_dir: Path) -> str:
     """Run all structural lint checks and return a formatted Markdown report.
 

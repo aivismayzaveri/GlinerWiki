@@ -16,10 +16,35 @@ AGENTS_MD = """\
 
 ## Extraction Categories
 GLiNER2 extracts all items, then LLM reviews and routes into categories:
-- **Entities** (wiki/entities/): Named things — PERSON, ORGANIZATION, LOCATION, FACILITY, EVENT, PRODUCT, WORK_OF_ART, TECHNOLOGY, JOB_TITLE, LAW, LANGUAGE, NATIONALITY, MATERIAL
+- **Entities** (wiki/entities/): Named things — PERSON, ORGANIZATION, LOCATION, FACILITY, EVENT, PRODUCT, WORK_OF_ART, TECHNOLOGY, LANGUAGE, MATERIAL, PROJECT, AWARD, METRIC, SPECIES, DRUG
 - **Concepts** (wiki/concepts/): Abstract ideas — CONCEPT type only
-- **Temporal** (metadata only): DATE, TIME — embedded as `date_mentioned:` in summary frontmatter, no wiki pages
-- **Discard**: MONEY, QUANTITY, IDENTIFIER, FILE — filtered out (attributes, not entities)
+- **Temporal** (metadata only): DATE, TIME — embedded as `validity[]` blocks in entity pages; no own wiki pages
+- **Discard**: MONEY, QUANTITY, IDENTIFIER, JOB_TITLE, NATIONALITY — filtered out (attributes, not named entities)
+
+## Entity Validity (Bi-temporal)
+Each entity page may have a `validity[]` block in its frontmatter representing when facts about the entity were true:
+
+```
+validity:
+  - fact: "joined Google"
+    valid_from: "2015-03"
+    valid_to: "2022-12"
+    recorded_at: "2026-01-15"
+    source: summaries/attention-paper
+  - fact: "CEO of Apple"
+    valid_from: "2011-08"
+    valid_to: "open"
+    recorded_at: "2026-01-15"
+    source: summaries/apple-report
+```
+
+- `fact`: Natural-language description of the fact (what happened)
+- `valid_from`: When the fact became true (partial dates OK: "2015", "Q3 2025", "early 2020s")
+- `valid_to`: When the fact stopped being true ("open" = still true)
+- `recorded_at`: When this was first recorded in the wiki (jj transaction_time)
+- `source`: Which summary page this fact came from
+
+This enables temporal queries: "what changed since 2025", "what happened in 2025", "when did X happen".
 
 ## Special Files
 - index.md — Content catalog: every page with link, one-line summary, organized by category.
@@ -29,7 +54,7 @@ GLiNER2 extracts all items, then LLM reviews and routes into categories:
 ## Page Types
 - **Summary Page** (summaries/): Key content of a single source document.
 - **Concept Page** (concepts/): Abstract idea extracted by GLiNER2, reviewed by LLM. Links to related entities.
-- **Entity Page** (entities/): Named entity with type, aliases, mentions, and cross-references to concepts.
+- **Entity Page** (entities/): Named entity with type, aliases, validity timeline, mentions, and cross-references to concepts.
 - **Exploration Page** (explorations/): Saved query results — analyses, comparisons, syntheses.
 - **Index Page** (index.md): One-liner summary of every page in the wiki. Auto-maintained.
 
@@ -50,6 +75,13 @@ Operations: ingest, query, lint
 - Standard Markdown heading hierarchy
 - Keep each page focused on a single topic
 - Do not include YAML frontmatter (---) in generated content; it is managed by code
+
+## Entity Deduplication
+`openkb lint --entity-dedup` runs an LLM agent that:
+1. Reads all entity pages and builds a link-graph (who links to whom)
+2. Asks LLM to find semantic duplicates (same real-world entity, different page)
+3. Auto-merges: canonical page absorbs aliases/sources, all wikilinks are re-pointed
+4. Deletes duplicate pages and rebuilds the entity index
 """
 
 # Backward compat alias

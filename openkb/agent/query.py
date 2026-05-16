@@ -39,8 +39,23 @@ Before each tool call, output one short sentence explaining the reason.
 If you cannot find relevant information, say so clearly.
 """
 
+# Temporal question keywords that trigger temporal_search
+_TEMPORAL_KEYWORDS = (
+    "since", "changed", "happened in", "happened during",
+    "in the year", "in year", "during the year", "in 20", "in 19",
+    "what changed", "new in", "new since", "recently changed",
+    "earlier", "later than", "before", "after", "timeline of",
+    "when did", "when was", "date of", "first appeared",
+)
 
-def build_query_agent(wiki_root: str, model: str, language: str = "en") -> Agent:
+
+def _is_temporal_question(question: str) -> bool:
+    """Return True if the question asks about temporal facts."""
+    q = question.lower()
+    return any(kw in q for kw in _TEMPORAL_KEYWORDS)
+
+
+def build_query_agent(wiki_root: str, model: str, language: str = "en", question: str = "") -> Agent:
     """Build and return the Q&A agent."""
     schema_md = get_agents_md(Path(wiki_root))
     instructions = _QUERY_INSTRUCTIONS_TEMPLATE.format(schema_md=schema_md)
@@ -80,12 +95,60 @@ def build_query_agent(wiki_root: str, model: str, language: str = "en") -> Agent
             return ToolOutputImage(image_url=result["image_url"])
         return ToolOutputText(text=result["text"])
 
+    @function_tool
+    def temporal_search(
+        question: str,
+        date_from: str = "",
+        date_to: str = "",
+    ) -> str:
+        """Search entity validity timelines for temporal questions.
+
+        Use this tool when the question is about things that changed, happened,
+        or were true during a specific time period. Examples:
+        - "what changed since 2025" → date_from="2025"
+        - "what happened in 2023" → date_from="2023", date_to="2023"
+        - "what's new in 2026" → date_from="2026"
+
+        Args:
+            question: The user's temporal question (for context).
+            date_from: Start of the time range (e.g. "2017", "2025-03").
+            date_to: End of the time range (e.g. "2017", "2025", leave empty for open).
+        """
+        from openkb.temporal_index import TemporalIndex
+        wiki_path = Path(wiki_root)
+        ti = TemporalIndex(wiki_path / "entities")
+        try:
+            ti.index()
+        except Exception:
+            return "Could not index entity timelines."
+        if date_from:
+            results = ti.get_facts_since(date_from) if not date_to else ti.get_facts_in_range(date_from, date_to)
+        elif date_to:
+            results = ti.get_facts_in_range("1900", date_to)
+        else:
+            return "Specify at least date_from or date_to."
+        if not results:
+            return "No temporal facts found for the given range."
+        lines = []
+        for f in results:
+            window = f.valid_from or "?"
+            if f.valid_to and f.valid_to != "open":
+                window += f" → {f.valid_to}"
+            elif f.valid_to == "open":
+                window += " → present"
+            lines.append(f"- [[entities/{f.entity_slug}]] ({f.entity_name}, {f.entity_type}): {f.fact} [{window}] (recorded: {f.recorded_at})")
+        return "\n".join(lines) or "No temporal facts found."
+
     from agents.model_settings import ModelSettings
+
+    tools = [read_file, get_page_content, get_image]
+    if _is_temporal_question(question):
+        tools.append(temporal_search)
 
     return Agent(
         name="wiki-query",
         instructions=instructions,
-        tools=[read_file, get_page_content, get_image],
+        tools=tools,
         model=f"litellm/{model}",
         model_settings=ModelSettings(parallel_tool_calls=False),
     )
@@ -123,7 +186,7 @@ async def run_query(
 
     wiki_root = str(kb_dir / "wiki")
 
-    agent = build_query_agent(wiki_root, model, language=language)
+    agent = build_query_agent(wiki_root, model, language=language, question=question)
 
     if not stream:
         result = await Runner.run(agent, question, max_turns=MAX_TURNS)

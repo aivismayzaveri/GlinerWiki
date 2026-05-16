@@ -36,7 +36,7 @@ from openkb.entity_extractor import extract_entities, MergedEntity, RoutedEntiti
 from openkb.entity_writer import (
     write_entity_pages, update_entity_index, add_entity_backlinks,
     write_concept_pages, add_concept_backlinks, embed_temporal_metadata,
-    add_entity_links_to_concept_pages,
+    embed_entity_temporal, add_entity_links_to_concept_pages,
 )
 from openkb.wiki_utils import (
     ensure_h2_section,
@@ -1002,6 +1002,7 @@ async def _compile_concepts(
     # --- Step 5c: Embed temporal metadata (code only) ---
     if temporal:
         embed_temporal_metadata(wiki_dir, doc_name, temporal)
+        embed_entity_temporal(wiki_dir, doc_name, temporal)
 
 
 async def compile_short_doc(

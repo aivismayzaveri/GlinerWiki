@@ -656,17 +656,23 @@ async def run_lint(kb_dir: Path) -> Path | None:
 @click.option("--fix", is_flag=True, default=False,
               help="Auto-fix issues: rewrite broken [[wikilinks]] (fuzzy match), "
                    "merge duplicate entity pages, strip invalid links.")
+@click.option("--entity-dedup", is_flag=True, default=False,
+              help="Run LLM-powered entity deduplication and auto-merge duplicates.")
 @click.pass_context
-def lint(ctx, fix):
+def lint(ctx, fix, entity_dedup):
     """Lint the knowledge base for structural and semantic inconsistencies."""
     kb_dir = _find_kb_dir(ctx.obj.get("kb_dir_override"))
     if kb_dir is None:
         click.echo("No knowledge base found. Run `openkb init` first.")
         return
+
+    wiki_dir = kb_dir / "wiki"
+
+    # --fix: structural fixes
     if fix:
         from openkb.lint import fix_broken_links, fix_entity_duplicates
 
-        files_changed, ghosts = fix_broken_links(kb_dir / "wiki")
+        files_changed, ghosts = fix_broken_links(wiki_dir)
         if files_changed:
             click.echo(
                 f"Fixed {ghosts} wikilink(s) across {files_changed} file(s)."
@@ -674,13 +680,24 @@ def lint(ctx, fix):
         else:
             click.echo("All wikilinks resolve.")
 
-        removed, merges = fix_entity_duplicates(kb_dir / "wiki")
+        removed, merges = fix_entity_duplicates(wiki_dir)
         if removed:
             click.echo(f"Merged {removed} duplicate entity page(s):")
             for desc in merges:
                 click.echo(f"  {desc}")
         else:
             click.echo("No duplicate entities found.")
+
+    # --entity-dedup: LLM-powered semantic dedup
+    if entity_dedup:
+        from openkb.lint import lint_entity_dedup_llm
+        openkb_dir = kb_dir / ".openkb"
+        _setup_llm_key(kb_dir)
+        config = load_config(openkb_dir / "config.yaml")
+        model: str = config.get("model", DEFAULT_CONFIG["model"])
+        report = lint_entity_dedup_llm(wiki_dir, model)
+        click.echo(report)
+        return
 
     asyncio.run(run_lint(kb_dir))
 

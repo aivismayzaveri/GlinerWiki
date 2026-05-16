@@ -433,7 +433,9 @@ def embed_temporal_metadata(
 ) -> None:
     """Embed DATE/TIME entities as date_mentioned frontmatter in the summary page.
 
-    Does not create wiki pages for temporal entities — just adds metadata.
+    Kept for backward compat. The main temporal embedding now happens via
+    embed_entity_temporal which writes validity[] blocks in entity pages.
+    This function maintains the summary-level date_mentioned[] list.
     """
     if not temporal:
         return
@@ -464,6 +466,155 @@ def embed_temporal_metadata(
             text = fm_block + body
 
     summary_path.write_text(text, encoding="utf-8")
+
+
+def embed_entity_temporal(
+    wiki_dir: Path,
+    doc_name: str,
+    temporal: list[MergedEntity],
+) -> None:
+    """Embed DATE/TIME entities as validity[] blocks in entity pages.
+
+    For each temporal entity (DATE/TIME), finds the nearest non-temporal entity
+    in the same document's entity list and adds a validity entry to that entity's
+    page. Also falls back to extracting entity mentions from the summary text.
+
+    Each validity entry has: fact, valid_from, valid_to, recorded_at, source.
+    recorded_at is set to today (jj transaction_time set at compile time).
+    """
+    if not temporal:
+        return
+
+    import datetime
+
+    today = datetime.date.today().isoformat()
+
+    entities_dir = wiki_dir / "entities"
+    if not entities_dir.is_dir():
+        return
+
+    # Build a map of (normalized entity name -> slug) for nearby entity linking
+    # We'll use a heuristic: for each temporal entity's fact_text, look for
+    # entity names mentioned in the fact_text and link to those pages
+    _slug_cache: dict[str, str] = {}
+    for path in entities_dir.glob("*.md"):
+        if path.name == "index.md":
+            continue
+        slug = path.stem
+        text = path.read_text(encoding="utf-8")
+        # Cache by H1 name and all aliases
+        name = _extract_h1_name(text) or slug.replace("-", " ")
+        _slug_cache[_normalize_name(name)] = slug
+        meta, _ = _read_entity_frontmatter(text)
+        for alias in meta.get("aliases", []):
+            _slug_cache[_normalize_name(alias)] = slug
+
+    for t in temporal:
+        if not t.fact_text and not t.canonical_name:
+            continue
+
+        # Find which entity this temporal fact belongs to by matching
+        # fact_text against known entity names
+        target_slug: str | None = None
+
+        # Try to find entity slug from the slug cache using entity names in fact_text
+        fact_text_lower = t.fact_text.lower()
+        for cached_name, slug in _slug_cache.items():
+            if cached_name and cached_name in fact_text_lower:
+                target_slug = slug
+                break
+
+        # Fallback: look for any entity page whose name appears in fact_text
+        if not target_slug:
+            # Try matching against all entity names found in _slug_cache
+            for cached_name, slug in _slug_cache.items():
+                if cached_name and len(cached_name) > 2 and cached_name in fact_text_lower:
+                    target_slug = slug
+                    break
+
+        if not target_slug:
+            continue
+
+        entity_path = entities_dir / f"{target_slug}.md"
+        if not entity_path.exists():
+            continue
+
+        text = entity_path.read_text(encoding="utf-8")
+
+        # Append validity entry
+        fact_line = f'    - fact: "{t.fact_text}"'
+        from_line = f'    valid_from: "{t.valid_from}"'
+        to_line = f'    valid_to: "{t.valid_to}"'
+        recorded_line = f'    recorded_at: "{today}"'
+        source_line = f'    source: "summaries/{doc_name}"'
+
+        new_entry = "\n".join([fact_line, from_line, to_line, recorded_line, source_line])
+
+        if "validity:" in text:
+            # Append to existing validity block before the closing ---
+            # Find the last "valid_to:" line in the existing validity block
+            # and append after it
+            text = _append_validity_entry(text, new_entry)
+        else:
+            # Add validity block after existing frontmatter
+            text = _insert_validity_block(text, new_entry)
+
+        entity_path.write_text(text, encoding="utf-8")
+
+
+def _extract_h1_name(text: str) -> str | None:
+    for line in text.split("\n"):
+        if line.startswith("# ") and not line.startswith("## "):
+            return line[2:].strip()
+    return None
+
+
+def _append_validity_entry(text: str, new_entry: str) -> str:
+    """Append a validity entry to an existing validity block."""
+    lines = text.split("\n")
+    # Find the last line of the validity block (line before next top-level key or ---)
+    in_validity = False
+    last_entry_end = -1
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == "validity:":
+            in_validity = True
+            continue
+        if in_validity:
+            # End of block
+            if stripped and not stripped.startswith("  ") and stripped != "- ...":
+                in_validity = False
+                break
+            if stripped.startswith("source:"):
+                last_entry_end = i
+    if last_entry_end >= 0:
+        lines.insert(last_entry_end + 1, new_entry)
+    else:
+        # Fallback: just append before closing ---
+        # Find last --- at top level
+        fm_count = 0
+        for i in range(len(lines)):
+            if lines[i].startswith("---"):
+                fm_count += 1
+        # Insert before the closing ---
+        insert_idx = len(lines)
+        for i in range(len(lines) - 1, -1, -1):
+            if lines[i].strip() == "---" and fm_count == 2:
+                insert_idx = i
+                break
+        lines.insert(insert_idx, new_entry)
+    return "\n".join(lines)
+
+
+def _insert_validity_block(text: str, first_entry: str) -> str:
+    """Insert a new validity block after frontmatter."""
+    if not text.startswith("---"):
+        return text
+    end = text.find("---", 3)
+    if end == -1:
+        return text
+    validity_block = f"validity:\n{first_entry}\n"
+    return text[:end + 3] + "\n" + validity_block + text[end + 3:]
 
 
 def add_entity_links_to_concept_pages(
