@@ -7,13 +7,17 @@ from typing import Any
 import yaml
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "model": "gpt-5.4-mini",
+    "model": "gemma-3n-e2b-it",
     "language": "en",
     "pageindex_threshold": 20,
     "entity_extraction": True,
     "entity_confidence_threshold": 0.7,
     "entity_gliner_model": "fastino/gliner2-large-v1",
     "entity_llm_model": "",  # Empty = use main model; set to cheaper model like "gpt-4.1-nano"
+    # LiteRT-LM local server defaults
+    "litertlm_base_url": "http://localhost:8080/v1",
+    "litertlm_model": "google/gemma-3n-e2b-it-litert-lm",
+    "litertlm_context_window": 256000,
 }
 
 GLOBAL_CONFIG_DIR = Path.home() / ".config" / "openkb"
@@ -43,6 +47,15 @@ def load_config(config_path: Path) -> dict[str, Any]:
     env_entity_model = os.environ.get("ENTITY_LLM_MODEL", "").strip()
     if env_entity_model:
         config["entity_llm_model"] = env_entity_model
+
+    # Env var overrides for LiteRT-LM
+    env_base_url = os.environ.get("LITERTLM_BASE_URL", "").strip()
+    if env_base_url:
+        config["litertlm_base_url"] = env_base_url
+
+    env_litertlm_model = os.environ.get("LITERTLM_MODEL", "").strip()
+    if env_litertlm_model:
+        config["litertlm_model"] = env_litertlm_model
 
     return config
 

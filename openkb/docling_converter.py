@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 
 from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.datamodel.pipeline_options import EasyOcrOptions, PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling_core.types.doc import ImageRefMode, PictureItem, TableItem
 
@@ -29,6 +29,7 @@ def _get_converter() -> DocumentConverter:
         pipeline_options.generate_picture_images = True
         pipeline_options.images_scale = 2.0
         pipeline_options.do_picture_description = True  # SmolVLM-256M image descriptions
+        pipeline_options.ocr_options = EasyOcrOptions(lang=["en"])
         _converter = DocumentConverter(
             format_options={
                 InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),

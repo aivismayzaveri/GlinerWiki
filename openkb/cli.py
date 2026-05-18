@@ -260,33 +260,57 @@ def init():
     # Interactive prompts — skip if env vars are set
     env_model = os.environ.get("LLM_MODEL", "").strip()
     env_api_key = os.environ.get("LLM_API_KEY", "").strip()
+    env_base_url = os.environ.get("LITERTLM_BASE_URL", "").strip()
 
-    if env_model:
-        model = env_model
-        click.echo(f"Using model from LLM_MODEL: {model}")
-    else:
-        click.echo("Pick an LLM in `provider/model` LiteLLM format:")
-        click.echo("  OpenAI:    gpt-5.4-mini, gpt-5.4")
-        click.echo("  Anthropic: anthropic/claude-sonnet-4-6, anthropic/claude-opus-4-6")
-        click.echo("  Gemini:    gemini/gemini-3.1-pro-preview, gemini/gemini-3-flash-preview")
-        click.echo("  Others:    see https://docs.litellm.ai/docs/providers")
+    # Determine mode: local LiteRT-LM vs cloud API
+    use_local = False
+    if not env_api_key and not env_base_url:
+        click.echo("LLM setup — choose one of:")
+        click.echo("  1) Local LiteRT-LM (Gemma4-e2b, no API key needed, auto-downloads model)")
+        click.echo("  2) Cloud API (OpenAI/Anthropic/etc. — enter API key)")
         click.echo()
-        model = click.prompt(
-            f"Model (enter for default {DEFAULT_CONFIG['model']})",
-            default=DEFAULT_CONFIG["model"],
-            show_default=False,
-        )
+        choice = click.prompt("Choice", default="1", show_default=False).strip()
+        use_local = choice == "1"
+    elif env_base_url:
+        use_local = True
 
-    if env_api_key:
+    if use_local:
+        # LiteRT-LM local mode — default model + auto-download
+        model = os.environ.get("LLM_MODEL", "").strip() or DEFAULT_CONFIG["model"]
         api_key = ""
-        click.echo("Using API key from LLM_API_KEY (skipping prompt).")
+        base_url = os.environ.get("LITERTLM_BASE_URL", "").strip() or DEFAULT_CONFIG["litertlm_base_url"]
+        litertlm_model = os.environ.get("LITERTLM_MODEL", "").strip() or DEFAULT_CONFIG["litertlm_model"]
+        click.echo(f"Using local LiteRT-LM model: {model}")
+        click.echo(f"  Base URL: {base_url}")
+        click.echo(f"  LiteRT-LM model: {litertlm_model}")
     else:
-        api_key = click.prompt(
-            "LLM API Key (saved to .env, enter to skip)",
-            default="",
-            hide_input=True,
-            show_default=False,
-        ).strip()
+        # Cloud API mode
+        if env_model:
+            model = env_model
+            click.echo(f"Using model from LLM_MODEL: {model}")
+        else:
+            click.echo("Pick an LLM in `provider/model` LiteLLM format:")
+            click.echo("  OpenAI:    gpt-5.4-mini, gpt-5.4")
+            click.echo("  Anthropic: anthropic/claude-sonnet-4-6, anthropic/claude-opus-4-6")
+            click.echo("  Gemini:    gemini/gemini-3.1-pro-preview, gemini/gemini-3-flash-preview")
+            click.echo("  Others:    see https://docs.litellm.ai/docs/providers")
+            click.echo()
+            model = click.prompt(
+                f"Model (enter for default {DEFAULT_CONFIG['model']})",
+                default=DEFAULT_CONFIG["model"],
+                show_default=False,
+            )
+
+        if env_api_key:
+            api_key = ""
+            click.echo("Using API key from LLM_API_KEY (skipping prompt).")
+        else:
+            api_key = click.prompt(
+                "LLM API Key (saved to .env, enter to skip)",
+                default="",
+                hide_input=True,
+                show_default=False,
+            ).strip()
     # Create directory structure
     Path("raw").mkdir(exist_ok=True)
     Path("wiki/sources/images").mkdir(parents=True, exist_ok=True)
@@ -326,12 +350,30 @@ def init():
         "entity_gliner_model": DEFAULT_CONFIG["entity_gliner_model"],
         "entity_llm_model": DEFAULT_CONFIG["entity_llm_model"],
     }
+    if use_local:
+        config["litertlm_base_url"] = base_url
+        config["litertlm_model"] = litertlm_model
+        config["litertlm_context_window"] = DEFAULT_CONFIG["litertlm_context_window"]
     save_config(openkb_dir / "config.yaml", config)
     (openkb_dir / "hashes.json").write_text(json.dumps({}), encoding="utf-8")
 
-    # Write API key to KB-local .env (0600) if the user provided one
-    if api_key:
-        env_path = Path(".env")
+    # Write API key / LiteRT-LM config to KB-local .env
+    env_path = Path(".env")
+    if use_local:
+        # Write LiteRT-LM settings instead of API key
+        env_lines = []
+        if env_path.exists():
+            existing = env_path.read_text(encoding="utf-8")
+            # Preserve any existing non-LiteRT-LM vars
+            for line in existing.splitlines():
+                if line and not line.startswith("LITERTLM_") and not line.startswith("LLM_"):
+                    env_lines.append(line)
+        env_lines.append(f"LITERTLM_BASE_URL={base_url}")
+        env_lines.append(f"LITERTLM_MODEL={litertlm_model}")
+        env_path.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
+        os.chmod(env_path, 0o600)
+        click.echo("Saved LiteRT-LM config to .env.")
+    elif api_key:
         if env_path.exists():
             click.echo(".env already exists, skipping write. Add LLM_API_KEY manually if needed.")
         else:
@@ -347,7 +389,18 @@ def init():
     # Pre-download models so first `openkb add` is fast
     click.echo("Pre-downloading models (first run only, cached after)...")
     try:
-        click.echo("  Loading docling converter (OCR + SmolVLM)...", nl=False)
+        click.echo("  EasyOCR models...", nl=False)
+        from docling.models.stages.ocr.easyocr_model import EasyOcrModel
+        EasyOcrModel.download_models(
+            detection_models=["craft"],
+            recognition_models=["english_g2", "latin_g2"],
+            force=False,
+        )
+        click.echo(" done.")
+    except Exception as exc:
+        click.echo(f" warning: {exc}")
+    try:
+        click.echo("  Docling converter (layout + table + SmolVLM)...", nl=False)
         from openkb.docling_converter import _get_converter
         _get_converter()
         click.echo(" done.")
@@ -355,12 +408,14 @@ def init():
         click.echo(f" warning: {exc}")
     try:
         gliner_name = config.get("entity_gliner_model", DEFAULT_CONFIG["entity_gliner_model"])
-        click.echo(f"  Loading GLiNER2 model ({gliner_name})...", nl=False)
+        click.echo(f"  GLiNER2 model ({gliner_name})...", nl=False)
         from openkb.entity_extractor import _get_gliner_model
         _get_gliner_model(gliner_name)
         click.echo(" done.")
     except Exception as exc:
         click.echo(f" warning: {exc}")
+    if use_local:
+        click.echo("  Note: run 'python -m openkb.install_models' for full install including LiteRT-LM")
     click.echo("Models cached. Ready to add documents.")
 
 
@@ -774,6 +829,21 @@ def list_cmd(ctx):
         click.echo("No knowledge base found. Run `openkb init` first.")
         return
     print_list(kb_dir)
+
+
+@cli.command()
+def install-models():
+    """Download and cache all ML models needed by openkb.
+
+    This downloads:
+    - EasyOCR english_g2 + latin_g2 recognition models + craft detector
+    - GLiNER2 fastino/gliner2-large-v1
+    - Docling layout, table-structure, and SmolVLM picture models
+
+    Run once after installing openkb, or whenever you want to pre-fetch models.
+    """
+    from openkb.install_models import install_all
+    install_all()
 
 
 def print_status(kb_dir: Path) -> None:

@@ -18,6 +18,28 @@ logger = logging.getLogger(__name__)
 _WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 
 
+def _litertlm_kwargs(model: str) -> dict:
+    """Return LiteRT-LM kwargs (base_url, api_key, context_window) if applicable."""
+    import os
+    from openkb.config import DEFAULT_CONFIG
+    if not (
+        model.startswith("google/gemma-3n-")
+        or model.startswith("gemma-3n-")
+        or "gemma" in model.lower()
+    ):
+        return {}
+    config = DEFAULT_CONFIG
+    base_url = os.environ.get("LITERTLM_BASE_URL", "").strip() or config.get("litertlm_base_url", "")
+    if not base_url:
+        return {}
+    context_window = config.get("litertlm_context_window", 256000)
+    return {
+        "base_url": base_url.rstrip("/") + "/v1",
+        "api_key": "local",
+        "max_tokens": context_window,
+    }
+
+
 def collect_entity_graph(wiki_dir: Path) -> dict:
     """Build a graph of all entities with their links.
 
@@ -165,8 +187,15 @@ Return ONLY valid JSON (a JSON array), no fences, no explanation.
 """.format(entities_json=json.dumps(entity_list, indent=2))
 
         try:
+            import os
+            from openkb.config import DEFAULT_CONFIG
             kwargs: dict = {"max_tokens": 4096}
-            if self.base_url:
+            # Auto-inject LiteRT-LM kwargs if using a local Gemma model
+            if not self.base_url:
+                litertlm_opts = _litertlm_kwargs(self.model)
+                if litertlm_opts:
+                    kwargs.update(litertlm_opts)
+            elif self.base_url:
                 kwargs["base_url"] = self.base_url
             response = litellm.completion(
                 model=self.model,
