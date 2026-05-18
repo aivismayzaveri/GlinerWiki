@@ -19,6 +19,28 @@ import litellm
 
 logger = logging.getLogger(__name__)
 
+
+def _litertlm_kwargs(model: str) -> dict:
+    """Return LiteRT-LM kwargs (base_url, api_key, context_window) if applicable."""
+    import os
+    from openkb.config import DEFAULT_CONFIG
+    if not (
+        model.startswith("google/gemma-3n-")
+        or model.startswith("gemma-3n-")
+        or "gemma" in model.lower()
+    ):
+        return {}
+    config = DEFAULT_CONFIG
+    base_url = os.environ.get("LITERTLM_BASE_URL", "").strip() or config.get("litertlm_base_url", "")
+    if not base_url:
+        return {}
+    context_window = config.get("litertlm_context_window", 256000)
+    return {
+        "base_url": base_url.rstrip("/") + "/v1",
+        "api_key": "local",
+        "max_tokens": context_window,
+    }
+
 # Entity type definitions shared by GLiNER2 schema and LLM prompt.
 ENTITY_TYPES: dict[str, str] = {
     "PERSON": "Named people — individuals, fictional characters, authors, researchers",
@@ -480,7 +502,12 @@ def review_entities_llm(
 
     try:
         completion_kwargs: dict = {"max_tokens": 4096}
-        if base_url:
+        # Auto-inject LiteRT-LM kwargs if using a local Gemma model
+        if not base_url:
+            litertlm_opts = _litertlm_kwargs(model)
+            if litertlm_opts:
+                completion_kwargs.update(litertlm_opts)
+        elif base_url:
             completion_kwargs["base_url"] = base_url
         logger.info("LLM entity review: sending %d entities + %d chars of text", len(gliner_entities), len(doc_text))
         response = litellm.completion(
